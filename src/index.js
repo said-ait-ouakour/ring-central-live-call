@@ -68,6 +68,10 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'telephonySessionId and partyId are required' });
     }
 
+    if (!extensionId) {
+      return res.status(400).json({ error: 'extensionId (advisor extension) is required' });
+    }
+
     const callId = telephonySessionId;
 
     if (getCall(callId)) {
@@ -77,14 +81,14 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
     addCall(callId, {
       telephonySessionId,
       partyId,
-      extensionId: extensionId || 'unknown',
+      extensionId,
       advisorName: advisorName || 'Unknown Advisor',
       clientPhone: clientPhone || 'Unknown',
     });
 
-    console.log(`[api] Supervise request: session=${telephonySessionId} party=${partyId}`);
+    console.log(`[api] Supervise request: session=${telephonySessionId} party=${partyId} agent=${extensionId}`);
 
-    const superviseResult = await startSupervision(telephonySessionId, partyId);
+    const superviseResult = await startSupervision(telephonySessionId, partyId, extensionId);
 
     res.json({
       success: true,
