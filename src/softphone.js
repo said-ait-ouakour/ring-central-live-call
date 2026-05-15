@@ -10,7 +10,10 @@
  * softphone. We answer it and forward the decoded PCM audio to AssemblyAI.
  */
 
-import Softphone from 'ringcentral-softphone';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const Softphone = require('ringcentral-softphone').default;
 import config from './config.js';
 import {
   getOldestPendingCall,
