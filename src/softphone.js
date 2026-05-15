@@ -13,7 +13,7 @@
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const Softphone = require('ringcentral-softphone');
+const Softphone = require('ringcentral-softphone').default;
 import config from './config.js';
 import {
   getOldestPendingCall,
