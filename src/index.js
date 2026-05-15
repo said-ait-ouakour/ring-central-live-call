@@ -29,9 +29,18 @@ app.use(cors({
 }));
 app.use(express.json());
 
+/** Helps confirm in host logs (e.g. Railway) that the CRM is calling the bridge, not only opening /ws. */
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    console.log(`[http] ${req.method} ${req.path}`);
+  }
+  next();
+});
+
 function authMiddleware(req, res, next) {
   const apiKey = req.headers['x-api-key'];
   if (apiKey !== config.server.apiKey) {
+    console.warn(`[http] 401 ${req.method} ${req.path} — invalid or missing x-api-key`);
     return res.status(401).json({ error: 'Unauthorized — invalid API key' });
   }
   next();
@@ -170,6 +179,7 @@ async function start() {
       console.log(`   HTTP  →  http://0.0.0.0:${config.server.port}`);
       console.log(`   WS    →  ws://0.0.0.0:${config.server.port}/ws`);
       console.log(`   Health → http://0.0.0.0:${config.server.port}/health`);
+      console.log('[bridge] Active calls only after CRM POST /api/supervise (RingCentral does not notify this service automatically).');
       console.log('═══════════════════════════════════════════════════');
     });
   } catch (err) {
