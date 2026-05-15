@@ -14,19 +14,19 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const Softphone = require('ringcentral-softphone').default;
-import config from './config.js';
 import {
   getOldestPendingCall,
   setCallSession,
   removeCall,
 } from './call-store.js';
+import { loadSipCredentials } from './sip-credentials.js';
 import { connectTranscriber, closeTranscriber } from './transcriber.js';
 import { broadcast } from './ws-broadcaster.js';
 
 let softphone = null;
 
 export async function initSoftphone() {
-  const { domain, outboundProxy, username, password, authorizationId } = config.sip;
+  const { domain, outboundProxy, username, password, authorizationId } = await loadSipCredentials();
 
   softphone = new Softphone({
     domain,
