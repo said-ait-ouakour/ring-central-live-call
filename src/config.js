@@ -41,6 +41,7 @@ const config = {
   supervisor: {
     extensionId: t('RC_SUPERVISOR_EXTENSION_ID'),
     deviceId: t('RC_SUPERVISOR_DEVICE_ID'),
+    monitoredExtensionId: t('RC_MONITORED_EXTENSION_ID'),
   },
   assemblyai: {
     apiKey: t('ASSEMBLYAI_API_KEY'),
@@ -49,6 +50,7 @@ const config = {
     port: parseInt(process.env.PORT || '3100', 10),
     apiKey: t('BRIDGE_API_KEY'),
     crmUrl: t('CRM_URL') || 'http://localhost:3000',
+    webhookUrl: t('RC_WEBHOOK_URL'),
   },
 };
 
