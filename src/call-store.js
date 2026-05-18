@@ -1,9 +1,18 @@
 /**
  * In-memory store for active supervised calls.
  * Each entry tracks the call session, transcriber, and metadata.
+ *
+ * There is no database: nothing is written to a SQL/NoSQL "active calls" table.
+ * Railway logs + GET /api/calls are how you observe state from outside the process.
  */
 
 const activeCalls = new Map();
+
+function logStoreSummary(context) {
+  const n = activeCalls.size;
+  const ids = Array.from(activeCalls.keys()).join(', ') || '(none)';
+  console.log(`[calls] ${context} — in-memory active count=${n} ids=[${ids}]`);
+}
 
 export function addCall(callId, data) {
   activeCalls.set(callId, {
@@ -19,6 +28,7 @@ export function addCall(callId, data) {
     startTime: new Date().toISOString(),
     status: 'supervising',
   });
+  logStoreSummary(`Added pending supervision callId=${callId}`);
   return activeCalls.get(callId);
 }
 
@@ -31,6 +41,7 @@ export function setCallSession(callId, callSession) {
   if (call) {
     call.callSession = callSession;
     call.status = 'connected';
+    console.log(`[calls] SIP session attached callId=${callId} status=connected`);
   }
 }
 
@@ -39,6 +50,7 @@ export function setAssemblyWs(callId, assemblyWs) {
   if (call) {
     call.assemblyWs = assemblyWs;
     call.status = 'transcribing';
+    console.log(`[calls] AssemblyAI session open callId=${callId} status=transcribing`);
   }
 }
 
@@ -56,6 +68,7 @@ export function removeCall(callId) {
   if (call) {
     call.status = 'ended';
     activeCalls.delete(callId);
+    logStoreSummary(`Removed callId=${callId}`);
   }
   return call;
 }

@@ -33,6 +33,7 @@ export function setupWsServer(server) {
   wss.on('connection', (ws, req) => {
     const query = parse(req.url || '', true).query;
     if (query.apiKey !== config.server.apiKey) {
+      console.warn('[ws] Connection rejected: missing or wrong apiKey query parameter');
       ws.close(4001, 'Unauthorized');
       return;
     }
@@ -54,12 +55,13 @@ export function setupWsServer(server) {
       }
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       clients.delete(ws);
       for (const [, subs] of subscriptions) {
         subs.delete(ws);
       }
-      console.log(`[ws] Client disconnected (total: ${clients.size})`);
+      const why = reason && reason.length > 0 ? reason.toString() : 'no reason';
+      console.log(`[ws] Client disconnected (total: ${clients.size}) code=${code} reason=${why}`);
     });
 
     ws.on('error', (err) => {
