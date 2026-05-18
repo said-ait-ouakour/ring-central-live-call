@@ -29,9 +29,18 @@ app.use(cors({
 }));
 app.use(express.json());
 
+/** Every /api hit (except OPTIONS) — confirms the CRM reached Railway, not only WebSocket. */
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api') && req.method !== 'OPTIONS') {
+    console.log(`[http] ${req.method} ${req.path}`);
+  }
+  next();
+});
+
 function authMiddleware(req, res, next) {
   const apiKey = req.headers['x-api-key'];
   if (apiKey !== config.server.apiKey) {
+    console.warn(`[http] 401 ${req.method} ${req.path} — invalid or missing x-api-key`);
     return res.status(401).json({ error: 'Unauthorized — invalid API key' });
   }
   next();
@@ -65,16 +74,22 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
     const { telephonySessionId, partyId, extensionId, advisorName, clientPhone } = req.body;
 
     if (!telephonySessionId || !partyId) {
+      console.warn('[api] Supervise rejected 400: missing telephonySessionId or partyId', {
+        hasSession: Boolean(telephonySessionId),
+        hasParty: Boolean(partyId),
+      });
       return res.status(400).json({ error: 'telephonySessionId and partyId are required' });
     }
 
     if (!extensionId) {
+      console.warn('[api] Supervise rejected 400: missing extensionId (advisor extension)');
       return res.status(400).json({ error: 'extensionId (advisor extension) is required' });
     }
 
     const callId = telephonySessionId;
 
     if (getCall(callId)) {
+      console.warn(`[api] Supervise rejected 409: callId=${callId} already monitored`);
       return res.status(409).json({ error: 'Call is already being monitored', callId });
     }
 
@@ -89,6 +104,11 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
     console.log(`[api] Supervise request: session=${telephonySessionId} party=${partyId} agent=${extensionId}`);
 
     const superviseResult = await startSupervision(telephonySessionId, partyId, extensionId);
+
+    console.log('[api] Supervise RingCentral API succeeded', {
+      callId,
+      supervisedPartyId: superviseResult?.party?.id || null,
+    });
 
     res.json({
       success: true,
@@ -113,7 +133,9 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
  * Returns all active monitored calls.
  */
 app.get('/api/calls', authMiddleware, (_req, res) => {
-  res.json({ calls: getAllCalls() });
+  const calls = getAllCalls();
+  console.log(`[api] GET /api/calls -> returning ${calls.length} in-memory active call(s)`);
+  res.json({ calls });
 });
 
 /**
@@ -139,6 +161,7 @@ app.delete('/api/calls/:callId', authMiddleware, (req, res) => {
   }
 
   removeCall(callId);
+  console.log(`[api] DELETE /api/calls/${callId} — stopped monitoring`);
   res.json({ success: true, message: `Stopped monitoring callId=${callId}` });
 });
 
@@ -170,6 +193,7 @@ async function start() {
       console.log(`   HTTP  →  http://0.0.0.0:${config.server.port}`);
       console.log(`   WS    →  ws://0.0.0.0:${config.server.port}/ws`);
       console.log(`   Health → http://0.0.0.0:${config.server.port}/health`);
+      console.log('[bridge] Active calls live only in RAM (no DB). CRM must POST /api/supervise after RingCentral Answered webhook.');
       console.log('═══════════════════════════════════════════════════');
     });
   } catch (err) {
