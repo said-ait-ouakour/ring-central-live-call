@@ -13,10 +13,14 @@ let subscriptionId = null;
 let renewalTimer = null;
 
 export async function registerWebhookSubscription() {
-  const webhookUrl = config.server.webhookUrl;
+  let webhookUrl = config.server.webhookUrl;
   if (!webhookUrl) {
     console.warn('[rc-sub] RC_WEBHOOK_URL not set — auto-detection disabled. Use POST /api/supervise manually.');
     return null;
+  }
+  if (!webhookUrl.startsWith('https://') && !webhookUrl.startsWith('http://')) {
+    webhookUrl = `https://${webhookUrl}`;
+    console.warn(`[rc-sub] RC_WEBHOOK_URL missing protocol — assuming ${webhookUrl}`);
   }
 
   const monitoredExtId = config.supervisor.monitoredExtensionId;
