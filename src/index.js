@@ -186,9 +186,11 @@ async function handleTelephonyEvent(event) {
   const { telephonySessionId, parties } = body;
   const monitoredExtId = config.supervisor.monitoredExtensionId;
 
-  // Find the agent's party that just got answered
+  // Find the agent's party that just got answered.
+  // Require extensionId to be present — external callers have no extensionId.
   const agentParty = parties?.find((p) =>
     p.status?.code === 'Answered' &&
+    p.extensionId &&
     (!monitoredExtId || p.extensionId === monitoredExtId)
   );
 
