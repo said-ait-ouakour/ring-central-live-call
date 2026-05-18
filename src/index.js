@@ -227,6 +227,12 @@ async function handleTelephonyEvent(event) {
   // "Answered" event fires (TAS-102 WrongState). Wait 2s before supervising.
   await new Promise((r) => setTimeout(r, 2000));
 
+  // If the CRM already called /api/supervise during the wait, don't double-supervise.
+  if (getCall(telephonySessionId)) {
+    console.log(`[webhook] session=${telephonySessionId} already supervised by CRM — skipping`);
+    return;
+  }
+
   try {
     await startSupervision(telephonySessionId, partyId, extensionId);
   } catch (err) {
