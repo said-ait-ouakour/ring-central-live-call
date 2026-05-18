@@ -25,13 +25,11 @@ RingCentral Call → Supervise API → SIP Softphone (this bridge)
 
 ## Setup
 
-### 1. Get SIP Credentials from RingCentral
+### 1. SIP device (supervisor)
 
-1. Login to [RingCentral Admin Portal](https://service.ringcentral.com)
-2. Navigate to the supervisor user's **Devices & Numbers**
-3. Find or create a device with type **"Existing Phone"**
-4. Click **"Set Up and Provision"** → **"Set up manually using SIP"**
-5. Note: `SIP Domain`, `Outbound Proxy`, `User Name`, `Password`, `Authorization ID`
+The bridge loads SIP registration details from the RingCentral **device sip-info** API using `RC_SUPERVISOR_DEVICE_ID`, so you usually do **not** need to paste `SIP_INFO_*` variables. The supervisor must still have an **Existing Phone** (Other Phone) device in Admin → **Devices & Numbers** — the same device ID you use for supervision.
+
+If the sip-info API is unavailable for your app, set the five `SIP_INFO_*` values from **Set up manually using SIP** on that device.
 
 ### 2. Get Supervisor Device ID
 
@@ -110,4 +108,4 @@ This service needs an **always-on server** (not serverless). Recommended free op
 - **Railway.app** — $5/month free credit
 - **Fly.io** — free tier with 3 small VMs
 
-Set all environment variables in the hosting platform's dashboard.
+Set the required environment variables in the hosting platform's dashboard (see `.env.example`). SIP fields are optional when the RingCentral app can read device sip-info.
