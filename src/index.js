@@ -179,6 +179,10 @@ app.post('/webhook/ringcentral', express.json(), async (req, res) => {
   }
 });
 
+// Tracks sessions we've already attempted (success or permanent failure)
+// so repeated webhook events for the same call don't trigger duplicate attempts.
+const _attemptedSessions = new Set();
+
 async function handleTelephonyEvent(event) {
   const body = event?.body;
   if (!body?.telephonySessionId) return;
@@ -186,16 +190,21 @@ async function handleTelephonyEvent(event) {
   const { telephonySessionId, parties } = body;
   const monitoredExtId = config.supervisor.monitoredExtensionId;
 
-  // Find the agent's party that just got answered
+  // Find the agent's party that just got answered.
+  // Require extensionId to be present — external callers have no extensionId.
   const agentParty = parties?.find((p) =>
     p.status?.code === 'Answered' &&
+    p.extensionId &&
     (!monitoredExtId || p.extensionId === monitoredExtId)
   );
 
   if (!agentParty) return;
 
-  // Avoid double-supervising the same call
-  if (getCall(telephonySessionId)) return;
+  // Avoid duplicate attempts for the same session across multiple webhook events
+  if (_attemptedSessions.has(telephonySessionId)) return;
+  _attemptedSessions.add(telephonySessionId);
+  // Expire the dedup entry after 10 minutes (call will be long over by then)
+  setTimeout(() => _attemptedSessions.delete(telephonySessionId), 600_000);
 
   const partyId = agentParty.id;
   const extensionId = agentParty.extensionId || monitoredExtId;
@@ -213,6 +222,10 @@ async function handleTelephonyEvent(event) {
     advisorName: `Extension ${extensionId}`,
     clientPhone: clientPhone || 'Unknown',
   });
+
+  // RC may not have fully established the session state at the moment the
+  // "Answered" event fires (TAS-102 WrongState). Wait 2s before supervising.
+  await new Promise((r) => setTimeout(r, 2000));
 
   try {
     await startSupervision(telephonySessionId, partyId, extensionId);
