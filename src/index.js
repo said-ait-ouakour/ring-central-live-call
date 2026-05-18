@@ -17,6 +17,7 @@ import { startSupervision, listSupervisorDevices } from './supervise.js';
 import { setupWsServer } from './ws-broadcaster.js';
 import { addCall, getAllCalls, getCall, removeCall } from './call-store.js';
 import { closeTranscriber } from './transcriber.js';
+import { registerWebhookSubscription } from './rc-subscription.js';
 
 const app = express();
 const server = createServer(app);
@@ -155,6 +156,72 @@ app.get('/api/devices', authMiddleware, async (_req, res) => {
   }
 });
 
+/**
+ * POST /webhook/ringcentral
+ * Receives push notification events from RingCentral.
+ * RingCentral sends a Validation-Token header on first delivery; echo it back.
+ */
+app.post('/webhook/ringcentral', express.json(), async (req, res) => {
+  // Validation handshake — RC POSTs with this header when subscription is created
+  const validationToken = req.headers['validation-token'];
+  if (validationToken) {
+    res.setHeader('Validation-Token', validationToken);
+    return res.status(200).send('OK');
+  }
+
+  // Acknowledge immediately — RC expects a fast response
+  res.status(200).send('OK');
+
+  try {
+    await handleTelephonyEvent(req.body);
+  } catch (err) {
+    console.error('[webhook] Error processing event:', err.message);
+  }
+});
+
+async function handleTelephonyEvent(event) {
+  const body = event?.body;
+  if (!body?.telephonySessionId) return;
+
+  const { telephonySessionId, parties } = body;
+  const monitoredExtId = config.supervisor.monitoredExtensionId;
+
+  // Find the agent's party that just got answered
+  const agentParty = parties?.find((p) =>
+    p.status?.code === 'Answered' &&
+    (!monitoredExtId || p.extensionId === monitoredExtId)
+  );
+
+  if (!agentParty) return;
+
+  // Avoid double-supervising the same call
+  if (getCall(telephonySessionId)) return;
+
+  const partyId = agentParty.id;
+  const extensionId = agentParty.extensionId || monitoredExtId;
+  const clientPhone =
+    agentParty.direction === 'Inbound'
+      ? agentParty.from?.phoneNumber
+      : agentParty.to?.phoneNumber;
+
+  console.log(`[webhook] Auto-supervising call: session=${telephonySessionId} party=${partyId} ext=${extensionId}`);
+
+  addCall(telephonySessionId, {
+    telephonySessionId,
+    partyId,
+    extensionId,
+    advisorName: `Extension ${extensionId}`,
+    clientPhone: clientPhone || 'Unknown',
+  });
+
+  try {
+    await startSupervision(telephonySessionId, partyId, extensionId);
+  } catch (err) {
+    console.error('[webhook] Auto-supervision failed:', err.message);
+    removeCall(telephonySessionId);
+  }
+}
+
 // ── Start ──────────────────────────────────────────────────────
 
 async function start() {
@@ -164,14 +231,20 @@ async function start() {
     console.log('[bridge] Registering SIP softphone with RingCentral...');
     await initSoftphone();
 
-    server.listen(config.server.port, () => {
-      console.log('═══════════════════════════════════════════════════');
-      console.log(' RC Audio Bridge is running');
-      console.log(`   HTTP  →  http://0.0.0.0:${config.server.port}`);
-      console.log(`   WS    →  ws://0.0.0.0:${config.server.port}/ws`);
-      console.log(`   Health → http://0.0.0.0:${config.server.port}/health`);
-      console.log('═══════════════════════════════════════════════════');
+    await new Promise((resolve) => {
+      server.listen(config.server.port, resolve);
     });
+
+    console.log('═══════════════════════════════════════════════════');
+    console.log(' RC Audio Bridge is running');
+    console.log(`   HTTP    →  http://0.0.0.0:${config.server.port}`);
+    console.log(`   WS      →  ws://0.0.0.0:${config.server.port}/ws`);
+    console.log(`   Health  →  http://0.0.0.0:${config.server.port}/health`);
+    console.log(`   Webhook →  http://0.0.0.0:${config.server.port}/webhook/ringcentral`);
+    console.log('═══════════════════════════════════════════════════');
+
+    // Register RC webhook subscription so calls are auto-detected
+    await registerWebhookSubscription();
   } catch (err) {
     console.error('[bridge] Fatal startup error:', err);
     process.exit(1);
