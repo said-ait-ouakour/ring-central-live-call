@@ -10,14 +10,14 @@ import config from './config.js';
  * Start supervising (silently listening to) a live call.
  *
  * @param {string} telephonySessionId - The telephony session to supervise
- * @param {string} partyId - The party within the session to supervise
+ * @param {string} partyId - The party that triggered supervision; kept for logging
  * @param {string} agentExtensionId - The advisor's extension ID (the person on the call)
  * @returns {Promise<object>} - The supervised party info from RingCentral
  */
 export async function startSupervision(telephonySessionId, partyId, agentExtensionId) {
-  const path = `/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/parties/${partyId}/supervise`;
+  const path = `/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/supervise`;
 
-  console.log(`[supervise] Starting supervision for session=${telephonySessionId} party=${partyId} agent=${agentExtensionId}`);
+  console.log(`[supervise] Starting session supervision for session=${telephonySessionId} triggerParty=${partyId} agent=${agentExtensionId}`);
 
   const result = await rcFetch(path, {
     method: 'POST',
