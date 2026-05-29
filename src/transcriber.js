@@ -16,9 +16,14 @@ import { broadcast } from './ws-broadcaster.js';
 
 const ASSEMBLYAI_WS_URL = 'wss://streaming.assemblyai.com/v3/ws';
 const SAMPLE_RATE = 16000;
+const BYTES_PER_SAMPLE = 2;
+const CHANNELS = 1;
+const TARGET_CHUNK_MS = 100;
+const TARGET_CHUNK_BYTES = Math.floor((SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNELS * TARGET_CHUNK_MS) / 1000);
 const SPEECH_MODEL = process.env.ASSEMBLYAI_SPEECH_MODEL || 'universal-streaming-english';
 
 const activeTranscribers = new Map();
+const audioBuffers = new Map();
 
 /**
  * Create and connect an AssemblyAI real-time transcription session for a call.
@@ -65,11 +70,13 @@ export function connectTranscriber(callId) {
     });
 
     ws.on('close', (code, reason) => {
-      console.log(`[transcriber] WebSocket closed for callId=${callId} code=${code}`);
+      const closeReason = reason?.toString?.() || '';
+      console.log(`[transcriber] WebSocket closed for callId=${callId} code=${code} reason=${closeReason}`);
       activeTranscribers.delete(callId);
+      audioBuffers.delete(callId);
       if (!resolved) {
         resolved = true;
-        reject(new Error(`AssemblyAI WS closed before open: ${code}`));
+        reject(new Error(`AssemblyAI WS closed before open: ${code} ${closeReason}`.trim()));
       }
     });
 
@@ -81,6 +88,22 @@ export function connectTranscriber(callId) {
       }
     }, 10_000);
   });
+}
+
+export function sendAudioChunk(callId, chunk) {
+  const ws = activeTranscribers.get(callId);
+  if (!ws || ws.readyState !== WebSocket.OPEN || !chunk?.length) return;
+
+  const buffered = audioBuffers.get(callId);
+  const nextBuffer = buffered ? Buffer.concat([buffered, Buffer.from(chunk)]) : Buffer.from(chunk);
+
+  let offset = 0;
+  while (nextBuffer.length - offset >= TARGET_CHUNK_BYTES) {
+    ws.send(nextBuffer.subarray(offset, offset + TARGET_CHUNK_BYTES), { binary: true });
+    offset += TARGET_CHUNK_BYTES;
+  }
+
+  audioBuffers.set(callId, nextBuffer.subarray(offset));
 }
 
 function handleTranscriptMessage(callId, msg) {
@@ -131,4 +154,5 @@ export function closeTranscriber(callId) {
   }
 
   activeTranscribers.delete(callId);
+  audioBuffers.delete(callId);
 }

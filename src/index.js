@@ -15,7 +15,7 @@ import config from './config.js';
 import { initSoftphone } from './softphone.js';
 import { startSupervision, listSupervisorDevices } from './supervise.js';
 import { setupWsServer } from './ws-broadcaster.js';
-import { addCall, getAllCalls, getCall, removeCall } from './call-store.js';
+import { addCall, getAllCalls, getCall, getPendingCallCount, removeCall } from './call-store.js';
 import { closeTranscriber } from './transcriber.js';
 import { registerWebhookSubscription } from './rc-subscription.js';
 
@@ -233,6 +233,12 @@ async function handleTelephonyEvent(event) {
 
   // Avoid duplicate attempts for the same session across multiple webhook events.
   if (_supervisedSessions.has(telephonySessionId) || _inFlightSessions.has(telephonySessionId)) return;
+
+  if (getPendingCallCount() > 0) {
+    console.warn(`[webhook] Skipping auto-supervision for session=${telephonySessionId}; another call is waiting for SIP INVITE`);
+    return;
+  }
+
   _inFlightSessions.add(telephonySessionId);
 
   const partyId = agentParty.id;

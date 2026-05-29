@@ -79,6 +79,16 @@ export function getCallBySessionId(sessionId) {
   return null;
 }
 
+export function getPendingCallCount() {
+  let count = 0;
+  for (const call of activeCalls.values()) {
+    if (call.status === 'supervising') {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 /**
  * Returns the oldest call in "supervising" state (waiting for SIP INVITE).
  * Used to match incoming INVITEs to pending supervisions.

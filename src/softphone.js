@@ -20,7 +20,7 @@ import {
   removeCall,
 } from './call-store.js';
 import { loadSipCredentials } from './sip-credentials.js';
-import { connectTranscriber, closeTranscriber } from './transcriber.js';
+import { connectTranscriber, closeTranscriber, sendAudioChunk } from './transcriber.js';
 import { broadcast } from './ws-broadcaster.js';
 
 let softphone = null;
@@ -82,12 +82,10 @@ async function handleIncomingCall(inviteMessage) {
       startTime: pendingCall.startTime,
     });
 
-    const assemblyWs = await connectTranscriber(callId);
+    await connectTranscriber(callId);
 
     callSession.on('audioPacket', (rtpPacket) => {
-      if (assemblyWs && assemblyWs.readyState === 1) {
-        assemblyWs.send(Buffer.from(rtpPacket.payload), { binary: true });
-      }
+      sendAudioChunk(callId, rtpPacket.payload);
     });
 
     callSession.once('disposed', () => {
@@ -123,6 +121,11 @@ function handleCallEnd(callId) {
   closeTranscriber(callId);
 
   const call = removeCall(callId);
+  if (!call) {
+    console.log(`[softphone] Ignoring duplicate call end for callId=${callId}`);
+    return;
+  }
+
   const duration = call
     ? Math.round((Date.now() - new Date(call.startTime).getTime()) / 1000)
     : 0;
