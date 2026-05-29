@@ -64,6 +64,8 @@ export function getAllCalls() {
   return Array.from(activeCalls.values()).map((c) => ({
     callId: c.callId,
     telephonySessionId: c.telephonySessionId,
+    partyId: c.partyId,
+    extensionId: c.extensionId,
     advisorName: c.advisorName,
     clientPhone: c.clientPhone,
     startTime: c.startTime,
