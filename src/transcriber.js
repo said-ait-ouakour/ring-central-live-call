@@ -24,6 +24,21 @@ const SPEECH_MODEL = process.env.ASSEMBLYAI_SPEECH_MODEL || 'universal-streaming
 
 const activeTranscribers = new Map();
 const audioBuffers = new Map();
+const audioStats = new Map();
+
+function getAudioStats(callId) {
+  if (!audioStats.has(callId)) {
+    audioStats.set(callId, {
+      receivedBytes: 0,
+      sentBytes: 0,
+      sentChunks: 0,
+      transcriptTurns: 0,
+      firstAudioLogged: false,
+      lastStatsLogAt: 0,
+    });
+  }
+  return audioStats.get(callId);
+}
 
 /**
  * Create and connect an AssemblyAI real-time transcription session for a call.
@@ -74,6 +89,7 @@ export function connectTranscriber(callId) {
       console.log(`[transcriber] WebSocket closed for callId=${callId} code=${code} reason=${closeReason}`);
       activeTranscribers.delete(callId);
       audioBuffers.delete(callId);
+      audioStats.delete(callId);
       if (!resolved) {
         resolved = true;
         reject(new Error(`AssemblyAI WS closed before open: ${code} ${closeReason}`.trim()));
@@ -94,16 +110,31 @@ export function sendAudioChunk(callId, chunk) {
   const ws = activeTranscribers.get(callId);
   if (!ws || ws.readyState !== WebSocket.OPEN || !chunk?.length) return;
 
+  const stats = getAudioStats(callId);
+  stats.receivedBytes += chunk.length;
+
   const buffered = audioBuffers.get(callId);
   const nextBuffer = buffered ? Buffer.concat([buffered, Buffer.from(chunk)]) : Buffer.from(chunk);
 
   let offset = 0;
   while (nextBuffer.length - offset >= TARGET_CHUNK_BYTES) {
     ws.send(nextBuffer.subarray(offset, offset + TARGET_CHUNK_BYTES), { binary: true });
+    stats.sentBytes += TARGET_CHUNK_BYTES;
+    stats.sentChunks += 1;
+    if (!stats.firstAudioLogged) {
+      stats.firstAudioLogged = true;
+      console.log(`[transcriber] First audio sent callId=${callId} chunkBytes=${TARGET_CHUNK_BYTES}`);
+    }
     offset += TARGET_CHUNK_BYTES;
   }
 
   audioBuffers.set(callId, nextBuffer.subarray(offset));
+
+  const now = Date.now();
+  if (now - stats.lastStatsLogAt > 10_000 && stats.sentChunks > 0) {
+    stats.lastStatsLogAt = now;
+    console.log(`[transcriber] Audio stats callId=${callId} receivedBytes=${stats.receivedBytes} sentChunks=${stats.sentChunks} sentBytes=${stats.sentBytes}`);
+  }
 }
 
 function handleTranscriptMessage(callId, msg) {
@@ -115,6 +146,10 @@ function handleTranscriptMessage(callId, msg) {
   }
 
   if (type === 'Turn' && transcript) {
+    const stats = getAudioStats(callId);
+    stats.transcriptTurns += 1;
+    console.log(`[transcriber] Transcript turn callId=${callId} final=${Boolean(end_of_turn)} chars=${transcript.length} turns=${stats.transcriptTurns}`);
+
     const entry = {
       type: 'transcript',
       callId,
@@ -128,6 +163,13 @@ function handleTranscriptMessage(callId, msg) {
       addTranscriptEntry(callId, entry);
     }
     broadcast(callId, entry);
+    return;
+  }
+
+  if (type === 'Turn') {
+    const stats = getAudioStats(callId);
+    stats.transcriptTurns += 1;
+    console.log(`[transcriber] Empty transcript turn callId=${callId} final=${Boolean(end_of_turn)} turns=${stats.transcriptTurns}`);
     return;
   }
 
@@ -155,4 +197,5 @@ export function closeTranscriber(callId) {
 
   activeTranscribers.delete(callId);
   audioBuffers.delete(callId);
+  audioStats.delete(callId);
 }
