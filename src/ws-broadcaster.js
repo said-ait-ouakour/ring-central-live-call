@@ -20,6 +20,7 @@ import config from './config.js';
 import { getAllCalls } from './call-store.js';
 
 let wss = null;
+let heartbeatInterval = null;
 
 // Map<callId, Set<WebSocket>>
 const subscriptions = new Map();
@@ -38,7 +39,12 @@ export function setupWsServer(server) {
     }
 
     clients.add(ws);
+    ws.isAlive = true;
     console.log(`[ws] Client connected (total: ${clients.size})`);
+
+    ws.on('pong', () => {
+      ws.isAlive = true;
+    });
 
     ws.send(JSON.stringify({
       type: 'active_calls',
@@ -65,6 +71,30 @@ export function setupWsServer(server) {
     ws.on('error', (err) => {
       console.error('[ws] Client error:', err.message);
     });
+  });
+
+  heartbeatInterval = setInterval(() => {
+    for (const ws of clients) {
+      if (!ws.isAlive) {
+        ws.terminate();
+        clients.delete(ws);
+        for (const [, subs] of subscriptions) {
+          subs.delete(ws);
+        }
+        console.log(`[ws] Terminated stale client (total: ${clients.size})`);
+        continue;
+      }
+
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, 30_000);
+
+  wss.on('close', () => {
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
   });
 
   console.log('[ws] WebSocket server ready on /ws');

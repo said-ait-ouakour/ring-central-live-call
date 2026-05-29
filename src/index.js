@@ -179,9 +179,40 @@ app.post('/webhook/ringcentral', express.json(), async (req, res) => {
   }
 });
 
-// Tracks sessions we've already attempted (success or permanent failure)
-// so repeated webhook events for the same call don't trigger duplicate attempts.
-const _attemptedSessions = new Set();
+// Tracks sessions currently being supervised so repeated webhook events don't
+// trigger duplicate concurrent attempts.
+const _inFlightSessions = new Set();
+const _supervisedSessions = new Set();
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isWrongStateError(err) {
+  return err?.message?.includes('TAS-102') || err?.message?.includes('WrongState');
+}
+
+async function startSupervisionWithRetry(telephonySessionId, partyId, extensionId) {
+  const maxAttempts = 7;
+  const delayMs = 2500;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        console.log(`[webhook] Retrying supervision attempt=${attempt}/${maxAttempts} session=${telephonySessionId}`);
+      }
+      return await startSupervision(telephonySessionId, partyId, extensionId);
+    } catch (err) {
+      if (!isWrongStateError(err) || attempt === maxAttempts) {
+        throw err;
+      }
+      console.warn(`[webhook] RingCentral session not ready yet attempt=${attempt}/${maxAttempts} session=${telephonySessionId}: ${err.message}`);
+      await sleep(delayMs);
+    }
+  }
+
+  throw new Error(`Supervision retry exhausted for session=${telephonySessionId}`);
+}
 
 async function handleTelephonyEvent(event) {
   const body = event?.body;
@@ -200,11 +231,9 @@ async function handleTelephonyEvent(event) {
 
   if (!agentParty) return;
 
-  // Avoid duplicate attempts for the same session across multiple webhook events
-  if (_attemptedSessions.has(telephonySessionId)) return;
-  _attemptedSessions.add(telephonySessionId);
-  // Expire the dedup entry after 10 minutes (call will be long over by then)
-  setTimeout(() => _attemptedSessions.delete(telephonySessionId), 600_000);
+  // Avoid duplicate attempts for the same session across multiple webhook events.
+  if (_supervisedSessions.has(telephonySessionId) || _inFlightSessions.has(telephonySessionId)) return;
+  _inFlightSessions.add(telephonySessionId);
 
   const partyId = agentParty.id;
   const extensionId = agentParty.extensionId || monitoredExtId;
@@ -223,15 +252,15 @@ async function handleTelephonyEvent(event) {
     clientPhone: clientPhone || 'Unknown',
   });
 
-  // RC may not have fully established the session state at the moment the
-  // "Answered" event fires (TAS-102 WrongState). Wait 2s before supervising.
-  await new Promise((r) => setTimeout(r, 2000));
-
   try {
-    await startSupervision(telephonySessionId, partyId, extensionId);
+    await startSupervisionWithRetry(telephonySessionId, partyId, extensionId);
+    _supervisedSessions.add(telephonySessionId);
+    setTimeout(() => _supervisedSessions.delete(telephonySessionId), 600_000);
   } catch (err) {
     console.error('[webhook] Auto-supervision failed:', err.message);
     removeCall(telephonySessionId);
+  } finally {
+    _inFlightSessions.delete(telephonySessionId);
   }
 }
 

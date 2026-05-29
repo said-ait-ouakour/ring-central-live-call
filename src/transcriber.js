@@ -1,10 +1,10 @@
 /**
  * AssemblyAI real-time transcription via raw WebSocket.
  *
- * Uses AssemblyAI's v2 streaming API:
- *   - Connect to wss://api.assemblyai.com/v2/realtime/ws?sample_rate=16000
- *   - Send base64-encoded PCM audio chunks
- *   - Receive partial and final transcripts
+ * Uses AssemblyAI's v3 streaming API:
+ *   - Connect to wss://streaming.assemblyai.com/v3/ws
+ *   - Send binary PCM audio chunks
+ *   - Receive turn-based transcript messages
  *
  * Each supervised call gets its own AssemblyAI WebSocket session.
  */
@@ -14,8 +14,9 @@ import config from './config.js';
 import { setAssemblyWs, addTranscriptEntry } from './call-store.js';
 import { broadcast } from './ws-broadcaster.js';
 
-const ASSEMBLYAI_WS_URL = 'wss://api.assemblyai.com/v2/realtime/ws';
+const ASSEMBLYAI_WS_URL = 'wss://streaming.assemblyai.com/v3/ws';
 const SAMPLE_RATE = 16000;
+const SPEECH_MODEL = process.env.ASSEMBLYAI_SPEECH_MODEL || 'universal-streaming-english';
 
 const activeTranscribers = new Map();
 
@@ -25,9 +26,17 @@ const activeTranscribers = new Map();
  */
 export function connectTranscriber(callId) {
   return new Promise((resolve, reject) => {
-    const url = `${ASSEMBLYAI_WS_URL}?sample_rate=${SAMPLE_RATE}&token=${config.assemblyai.apiKey}`;
+    const params = new URLSearchParams({
+      sample_rate: String(SAMPLE_RATE),
+      speech_model: SPEECH_MODEL,
+      format_turns: 'true',
+    });
 
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(`${ASSEMBLYAI_WS_URL}?${params.toString()}`, {
+      headers: {
+        Authorization: config.assemblyai.apiKey,
+      },
+    });
     let resolved = false;
 
     ws.on('open', () => {
@@ -75,45 +84,31 @@ export function connectTranscriber(callId) {
 }
 
 function handleTranscriptMessage(callId, msg) {
-  const { message_type, text, audio_start, audio_end, confidence, words, created } = msg;
+  const { type, transcript, end_of_turn, turn_order } = msg;
 
-  if (message_type === 'SessionBegins') {
-    console.log(`[transcriber] Session started for callId=${callId}, sessionId=${msg.session_id}`);
+  if (type === 'Begin') {
+    console.log(`[transcriber] Session started for callId=${callId}, sessionId=${msg.id}`);
     return;
   }
 
-  if (message_type === 'PartialTranscript' && text) {
-    broadcast(callId, {
-      type: 'transcript',
-      callId,
-      text,
-      isFinal: false,
-      audioStart: audio_start,
-      audioEnd: audio_end,
-      timestamp: created || new Date().toISOString(),
-    });
-    return;
-  }
-
-  if (message_type === 'FinalTranscript' && text) {
+  if (type === 'Turn' && transcript) {
     const entry = {
       type: 'transcript',
       callId,
-      text,
-      isFinal: true,
-      confidence,
-      words: words || [],
-      audioStart: audio_start,
-      audioEnd: audio_end,
-      timestamp: created || new Date().toISOString(),
+      text: transcript,
+      isFinal: Boolean(end_of_turn),
+      turnOrder: turn_order,
+      timestamp: new Date().toISOString(),
     };
 
-    addTranscriptEntry(callId, entry);
+    if (entry.isFinal) {
+      addTranscriptEntry(callId, entry);
+    }
     broadcast(callId, entry);
     return;
   }
 
-  if (message_type === 'SessionTerminated') {
+  if (type === 'Termination') {
     console.log(`[transcriber] Session terminated for callId=${callId}`);
     return;
   }
@@ -128,7 +123,7 @@ export function closeTranscriber(callId) {
 
   try {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ terminate_session: true }));
+      ws.send(JSON.stringify({ type: 'Terminate' }));
     }
     ws.close();
   } catch (err) {

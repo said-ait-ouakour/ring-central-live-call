@@ -49,6 +49,9 @@ export async function initSoftphone() {
 }
 
 async function handleIncomingCall(inviteMessage) {
+  let callId = null;
+  let callSession = null;
+
   try {
     const pendingCall = getOldestPendingCall();
     if (!pendingCall) {
@@ -57,10 +60,10 @@ async function handleIncomingCall(inviteMessage) {
       return;
     }
 
-    const callId = pendingCall.callId;
+    callId = pendingCall.callId;
     console.log(`[softphone] Answering supervised call for callId=${callId}`);
 
-    const callSession = await softphone.answer(inviteMessage);
+    callSession = await softphone.answer(inviteMessage);
 
     let sipSessionId = null;
     try {
@@ -83,9 +86,7 @@ async function handleIncomingCall(inviteMessage) {
 
     callSession.on('audioPacket', (rtpPacket) => {
       if (assemblyWs && assemblyWs.readyState === 1) {
-        const pcmPayload = rtpPacket.payload;
-        const base64Audio = Buffer.from(pcmPayload).toString('base64');
-        assemblyWs.send(JSON.stringify({ audio_data: base64Audio }));
+        assemblyWs.send(Buffer.from(rtpPacket.payload), { binary: true });
       }
     });
 
@@ -97,6 +98,24 @@ async function handleIncomingCall(inviteMessage) {
     console.log(`[softphone] Audio pipeline active for callId=${callId}`);
   } catch (err) {
     console.error('[softphone] Error handling incoming call:', err);
+    if (callSession) {
+      try {
+        callSession.hangup();
+      } catch {
+        // session may already be disposed
+      }
+    }
+    if (callId) {
+      closeTranscriber(callId);
+      removeCall(callId);
+      broadcast(callId, {
+        type: 'call_ended',
+        callId,
+        endTime: new Date().toISOString(),
+        duration: 0,
+        error: err.message,
+      });
+    }
   }
 }
 
