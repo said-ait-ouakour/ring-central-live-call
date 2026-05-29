@@ -85,6 +85,7 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
       extensionId,
       advisorName: advisorName || 'Unknown Advisor',
       clientPhone: clientPhone || 'Unknown',
+      direction: 'Outbound',
     });
 
     console.log(`[api] Supervise request: session=${telephonySessionId} party=${partyId} agent=${extensionId}`);
@@ -256,6 +257,7 @@ async function handleTelephonyEvent(event) {
     extensionId,
     advisorName: `Extension ${extensionId}`,
     clientPhone: clientPhone || 'Unknown',
+    direction: agentParty.direction || 'Outbound',
   });
 
   try {

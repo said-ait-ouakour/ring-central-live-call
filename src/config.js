@@ -46,6 +46,10 @@ const config = {
   assemblyai: {
     apiKey: t('ASSEMBLYAI_API_KEY'),
   },
+  supabase: {
+    url: t('SUPABASE_URL') || t('NEXT_PUBLIC_SUPABASE_URL'),
+    serviceRoleKey: t('SUPABASE_SERVICE_ROLE_KEY') || t('SUPBASE_SERVICE_API_KEY') || t('SUPABASE_SERVICE_API_KEY'),
+  },
   server: {
     port: parseInt(process.env.PORT || '3100', 10),
     apiKey: t('BRIDGE_API_KEY'),

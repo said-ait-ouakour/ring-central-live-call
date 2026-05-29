@@ -22,6 +22,7 @@ import {
 import { loadSipCredentials } from './sip-credentials.js';
 import { connectTranscriber, closeTranscriber, sendAudioChunk } from './transcriber.js';
 import { broadcast } from './ws-broadcaster.js';
+import { syncActiveCallEnded, syncActiveCallStarted } from './supabase-sync.js';
 
 let softphone = null;
 
@@ -73,6 +74,7 @@ async function handleIncomingCall(inviteMessage) {
     }
 
     setCallSession(callId, callSession);
+    syncActiveCallStarted(callId);
 
     broadcast(callId, {
       type: 'call_started',
@@ -105,7 +107,8 @@ async function handleIncomingCall(inviteMessage) {
     }
     if (callId) {
       closeTranscriber(callId);
-      removeCall(callId);
+      const removedCall = removeCall(callId);
+      syncActiveCallEnded(removedCall);
       broadcast(callId, {
         type: 'call_ended',
         callId,
@@ -125,6 +128,7 @@ function handleCallEnd(callId) {
     console.log(`[softphone] Ignoring duplicate call end for callId=${callId}`);
     return;
   }
+  syncActiveCallEnded(call);
 
   const duration = call
     ? Math.round((Date.now() - new Date(call.startTime).getTime()) / 1000)

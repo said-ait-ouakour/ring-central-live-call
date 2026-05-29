@@ -13,6 +13,7 @@ import WebSocket from 'ws';
 import config from './config.js';
 import { setAssemblyWs, addTranscriptEntry } from './call-store.js';
 import { broadcast } from './ws-broadcaster.js';
+import { syncTranscriptEntry } from './supabase-sync.js';
 
 const ASSEMBLYAI_WS_URL = 'wss://streaming.assemblyai.com/v3/ws';
 const SAMPLE_RATE = 16000;
@@ -161,6 +162,7 @@ function handleTranscriptMessage(callId, msg) {
 
     if (entry.isFinal) {
       addTranscriptEntry(callId, entry);
+      syncTranscriptEntry(callId, entry);
     }
     broadcast(callId, entry);
     return;
