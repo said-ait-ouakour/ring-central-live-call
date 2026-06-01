@@ -18,6 +18,7 @@ import { setupWsServer } from './ws-broadcaster.js';
 import { addCall, getAllCalls, getCall, getPendingCallCount, removeCall } from './call-store.js';
 import { closeTranscriber } from './transcriber.js';
 import { registerWebhookSubscription } from './rc-subscription.js';
+import { getAuthStatus } from './rc-auth.js';
 
 const app = express();
 const server = createServer(app);
@@ -88,7 +89,9 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
       direction: 'Outbound',
     });
 
+    const authStatus = getAuthStatus();
     console.log(`[api] Supervise request: session=${telephonySessionId} party=${partyId} agent=${extensionId}`);
+    console.log(`[rc-auth] token valid=${authStatus.valid} expiresAt=${authStatus.expiresAt} refreshStatus=${authStatus.valid ? 'not-needed' : 'needed'}`);
 
     const superviseResult = await startSupervision(telephonySessionId, partyId, extensionId);
 
@@ -180,10 +183,10 @@ app.post('/webhook/ringcentral', express.json(), async (req, res) => {
   }
 });
 
-// Tracks sessions currently being supervised so repeated webhook events don't
-// trigger duplicate concurrent attempts.
-const _inFlightSessions = new Set();
-const _supervisedSessions = new Set();
+// Tracks session/party pairs so repeated webhook events don't duplicate attempts.
+const _inFlightSupervisions = new Set();
+const _recentSupervisions = new Map();
+const SUPERVISION_DEDUPE_TTL_MS = 10 * 60 * 1000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -202,7 +205,9 @@ async function startSupervisionWithRetry(telephonySessionId, partyId, extensionI
       if (attempt > 1) {
         console.log(`[webhook] Retrying supervision attempt=${attempt}/${maxAttempts} session=${telephonySessionId}`);
       }
-      return await startSupervision(telephonySessionId, partyId, extensionId);
+      const authStatus = getAuthStatus();
+      console.log(`[rc-auth] token valid=${authStatus.valid} expiresAt=${authStatus.expiresAt} refreshStatus=${authStatus.valid ? 'not-needed' : 'needed'}`);
+      return await startSupervision(telephonySessionId, partyId, extensionId, attempt);
     } catch (err) {
       if (!isWrongStateError(err) || attempt === maxAttempts) {
         throw err;
@@ -232,17 +237,23 @@ async function handleTelephonyEvent(event) {
 
   if (!agentParty) return;
 
+  const partyId = agentParty.id;
+  const supervisionKey = `${telephonySessionId}:${partyId}`;
+  const recentUntil = _recentSupervisions.get(supervisionKey) || 0;
+  if (recentUntil <= Date.now()) {
+    _recentSupervisions.delete(supervisionKey);
+  }
+
   // Avoid duplicate attempts for the same session across multiple webhook events.
-  if (_supervisedSessions.has(telephonySessionId) || _inFlightSessions.has(telephonySessionId)) return;
+  if (_recentSupervisions.has(supervisionKey) || _inFlightSupervisions.has(supervisionKey)) return;
 
   if (getPendingCallCount() > 0) {
     console.warn(`[webhook] Skipping auto-supervision for session=${telephonySessionId}; another call is waiting for SIP INVITE`);
     return;
   }
 
-  _inFlightSessions.add(telephonySessionId);
+  _inFlightSupervisions.add(supervisionKey);
 
-  const partyId = agentParty.id;
   const extensionId = agentParty.extensionId || monitoredExtId;
   const clientPhone =
     agentParty.direction === 'Inbound'
@@ -262,13 +273,13 @@ async function handleTelephonyEvent(event) {
 
   try {
     await startSupervisionWithRetry(telephonySessionId, partyId, extensionId);
-    _supervisedSessions.add(telephonySessionId);
-    setTimeout(() => _supervisedSessions.delete(telephonySessionId), 600_000);
+    _recentSupervisions.set(supervisionKey, Date.now() + SUPERVISION_DEDUPE_TTL_MS);
+    setTimeout(() => _recentSupervisions.delete(supervisionKey), SUPERVISION_DEDUPE_TTL_MS);
   } catch (err) {
     console.error('[webhook] Auto-supervision failed:', err.message);
     removeCall(telephonySessionId);
   } finally {
-    _inFlightSessions.delete(telephonySessionId);
+    _inFlightSupervisions.delete(supervisionKey);
   }
 }
 

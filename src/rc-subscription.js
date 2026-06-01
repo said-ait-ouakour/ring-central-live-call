@@ -11,6 +11,7 @@ import config from './config.js';
 
 let subscriptionId = null;
 let renewalTimer = null;
+let subscriptionExpiresAt = null;
 
 export async function registerWebhookSubscription() {
   let webhookUrl = config.server.webhookUrl;
@@ -51,7 +52,8 @@ export async function registerWebhookSubscription() {
     });
 
     subscriptionId = data.id;
-    console.log(`[rc-sub] Subscription created: id=${subscriptionId}, expires: ${data.expirationTime}`);
+    subscriptionExpiresAt = data.expirationTime || null;
+    console.log(`[rc-subscription] subscription id=${subscriptionId} expiresAt=${subscriptionExpiresAt} renewalStatus=created`);
     _scheduleRenewal(data.expirationTime);
     return data;
   } catch (err) {
@@ -83,8 +85,42 @@ async function _renewSubscription() {
     method: 'PUT',
     body: JSON.stringify({ expiresIn: 86400 }),
   });
-  console.log('[rc-sub] Webhook subscription renewed');
+  subscriptionExpiresAt = data.expirationTime || null;
+  console.log(`[rc-subscription] subscription id=${subscriptionId} expiresAt=${subscriptionExpiresAt} renewalStatus=renewed`);
   _scheduleRenewal(data.expirationTime);
+  return data;
+}
+
+export async function ensureWebhookSubscriptionActive() {
+  if (!config.server.webhookUrl) {
+    console.log('[rc-subscription] subscription id=none expiresAt=null renewalStatus=disabled');
+    return null;
+  }
+
+  if (!subscriptionId) {
+    console.warn('[rc-subscription] subscription id=none expiresAt=null renewalStatus=missing; registering');
+    return registerWebhookSubscription();
+  }
+
+  try {
+    const data = await rcFetch(`/restapi/v1.0/subscription/${subscriptionId}`);
+    subscriptionExpiresAt = data.expirationTime || subscriptionExpiresAt;
+    const expiresAtMs = subscriptionExpiresAt ? new Date(subscriptionExpiresAt).getTime() : 0;
+    const expiresSoon = expiresAtMs && expiresAtMs - Date.now() < 3_600_000;
+
+    console.log(`[rc-subscription] subscription id=${subscriptionId} expiresAt=${subscriptionExpiresAt} renewalStatus=${expiresSoon ? 'renewing-soon' : 'active'}`);
+
+    if (expiresSoon) {
+      return _renewSubscription();
+    }
+
+    return data;
+  } catch (err) {
+    console.error(`[rc-subscription] subscription id=${subscriptionId} expiresAt=${subscriptionExpiresAt} renewalStatus=invalid; re-registering: ${err.message}`);
+    subscriptionId = null;
+    subscriptionExpiresAt = null;
+    return registerWebhookSubscription();
+  }
 }
 
 async function _deleteSubscription() {
@@ -94,4 +130,5 @@ async function _deleteSubscription() {
     // ignore stale subscription
   }
   subscriptionId = null;
+  subscriptionExpiresAt = null;
 }

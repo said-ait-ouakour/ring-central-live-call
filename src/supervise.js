@@ -5,6 +5,41 @@
 
 import { rcFetch } from './rc-auth.js';
 import config from './config.js';
+import { ensureWebhookSubscriptionActive } from './rc-subscription.js';
+import { ensureSoftphoneRegistered } from './softphone.js';
+
+function normalizeDevice(device) {
+  return {
+    id: String(device.id),
+    name: device.name,
+    type: device.type,
+    status: device.status,
+    serial: device.serial,
+  };
+}
+
+async function resolveSupervisorDeviceId() {
+  const extId = config.supervisor.extensionId;
+  const configuredDeviceId = String(config.supervisor.deviceId);
+  const path = `/restapi/v1.0/account/~/extension/${extId}/device`;
+  const data = await rcFetch(path);
+  const devices = (data.records || []).map(normalizeDevice);
+  const selected = devices.find((d) => d.id === configuredDeviceId);
+
+  console.log(`[rc-device] supervisorExtensionId=${extId} selectedDeviceId=${configuredDeviceId} deviceStatus=${selected?.status || 'missing'}`);
+
+  if (!selected) {
+    throw new Error(`Supervisor deviceId ${configuredDeviceId} was not found for supervisor extension ${extId}`);
+  }
+
+  return selected.id;
+}
+
+async function logCurrentRingCentralUser() {
+  const data = await rcFetch('/restapi/v1.0/account/~/extension/~');
+  console.log(`[rc-user] currentUserId=${data.contact?.id || data.id || 'unknown'} extensionId=${data.id || 'unknown'} accountId=${data.account?.id || 'unknown'} extensionNumber=${data.extensionNumber || 'unknown'}`);
+  return data;
+}
 
 /**
  * Start supervising (silently listening to) a live call.
@@ -14,16 +49,21 @@ import config from './config.js';
  * @param {string} agentExtensionId - The advisor's extension ID (the person on the call)
  * @returns {Promise<object>} - The supervised party info from RingCentral
  */
-export async function startSupervision(telephonySessionId, partyId, agentExtensionId) {
+export async function startSupervision(telephonySessionId, partyId, agentExtensionId, attempt = 1) {
   const path = `/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/supervise`;
 
-  console.log(`[supervise] Starting session supervision for session=${telephonySessionId} triggerParty=${partyId} agent=${agentExtensionId}`);
+  await ensureWebhookSubscriptionActive();
+  await ensureSoftphoneRegistered();
+  await logCurrentRingCentralUser();
+  const supervisorDeviceId = await resolveSupervisorDeviceId();
+
+  console.log(`[supervise] sessionId=${telephonySessionId} partyId=${partyId} attempt=${attempt} agentExtensionId=${agentExtensionId}`);
 
   const result = await rcFetch(path, {
     method: 'POST',
     body: JSON.stringify({
       mode: 'Listen',
-      supervisorDeviceId: config.supervisor.deviceId,
+      supervisorDeviceId,
       agentExtensionId: agentExtensionId,
     }),
   });
@@ -40,11 +80,5 @@ export async function listSupervisorDevices() {
   const extId = config.supervisor.extensionId;
   const path = `/restapi/v1.0/account/~/extension/${extId}/device`;
   const data = await rcFetch(path);
-  return (data.records || []).map((d) => ({
-    id: d.id,
-    name: d.name,
-    type: d.type,
-    status: d.status,
-    serial: d.serial,
-  }));
+  return (data.records || []).map(normalizeDevice);
 }

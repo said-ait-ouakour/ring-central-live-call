@@ -25,6 +25,8 @@ import { broadcast } from './ws-broadcaster.js';
 import { syncActiveCallEnded, syncActiveCallStarted } from './supabase-sync.js';
 
 let softphone = null;
+let lastRegisteredAt = 0;
+let registrationPromise = null;
 
 export async function initSoftphone() {
   const { domain, outboundProxy, username, password, authorizationId } = await loadSipCredentials();
@@ -43,10 +45,46 @@ export async function initSoftphone() {
     handleIncomingCall(inviteMessage);
   });
 
-  await softphone.register();
-  console.log('[softphone] Registered with RingCentral SIP proxy');
+  await registerSoftphone('startup');
 
   return softphone;
+}
+
+async function registerSoftphone(reason) {
+  if (!softphone) {
+    throw new Error('Softphone is not initialized');
+  }
+
+  if (registrationPromise) return registrationPromise;
+
+  registrationPromise = softphone.register()
+    .then(() => {
+      lastRegisteredAt = Date.now();
+      console.log(`[softphone] Registered with RingCentral SIP proxy reason=${reason} registeredAt=${new Date(lastRegisteredAt).toISOString()}`);
+      return softphone;
+    })
+    .catch((err) => {
+      console.error(`[softphone] SIP registration failed reason=${reason}: ${err.message}`);
+      throw err;
+    })
+    .finally(() => {
+      registrationPromise = null;
+    });
+
+  return registrationPromise;
+}
+
+export async function ensureSoftphoneRegistered() {
+  const maxRegistrationAgeMs = 4 * 60 * 1000;
+  const ageMs = lastRegisteredAt ? Date.now() - lastRegisteredAt : Infinity;
+
+  if (softphone && ageMs < maxRegistrationAgeMs) {
+    console.log(`[softphone] SIP registration fresh ageMs=${ageMs}`);
+    return softphone;
+  }
+
+  console.warn(`[softphone] SIP registration stale ageMs=${Number.isFinite(ageMs) ? ageMs : 'unknown'}; refreshing before supervision`);
+  return registerSoftphone('pre-supervise');
 }
 
 async function handleIncomingCall(inviteMessage) {
