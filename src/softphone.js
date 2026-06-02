@@ -17,6 +17,7 @@ const Softphone = require('ringcentral-softphone').default;
 import {
   getInviteWaitingCalls,
   getOldestPendingCall,
+  markCallAnswering,
   setCallSession,
   removeCall,
 } from './call-store.js';
@@ -168,6 +169,12 @@ async function handleIncomingCall(inviteMessage) {
     }
 
     callId = pendingCall.callId;
+    if (!markCallAnswering(callId)) {
+      console.warn(`[softphone] Duplicate or stale INVITE for callId=${callId} — declining`);
+      await softphone.decline(inviteMessage);
+      return;
+    }
+
     console.log(`[softphone] Answering supervised call for callId=${callId}`);
 
     callSession = await softphone.answer(inviteMessage);

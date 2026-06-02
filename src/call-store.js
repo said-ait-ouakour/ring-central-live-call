@@ -44,6 +44,16 @@ export function setCallStatus(callId, status) {
   return call;
 }
 
+export function markCallAnswering(callId) {
+  const call = activeCalls.get(callId);
+  if (!call || !invitePendingStatuses.has(call.status)) {
+    return false;
+  }
+
+  call.status = 'answering';
+  return true;
+}
+
 export function setAssemblyWs(callId, assemblyWs) {
   const call = activeCalls.get(callId);
   if (call) {

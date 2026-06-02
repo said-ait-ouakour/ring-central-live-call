@@ -190,7 +190,10 @@ const _recentSupervisions = new Map();
 const SUPERVISION_DEDUPE_TTL_MS = 10 * 60 * 1000;
 const INITIAL_SUPERVISE_DELAY_MS = 1500;
 const INVITE_WAIT_TIMEOUT_MS = 30_000;
+const SUPERVISION_MIN_SPACING_MS = 1200;
 const inviteWaitTimers = new Map();
+let supervisionQueue = Promise.resolve();
+let lastSupervisionRequestAt = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -247,6 +250,22 @@ function clearInviteWaitTimeout(callId) {
   inviteWaitTimers.delete(callId);
 }
 
+async function runWithSupervisionRateLimit(fn) {
+  const run = supervisionQueue.then(async () => {
+    const waitMs = Math.max(0, SUPERVISION_MIN_SPACING_MS - (Date.now() - lastSupervisionRequestAt));
+    if (waitMs > 0) await sleep(waitMs);
+
+    try {
+      return await fn();
+    } finally {
+      lastSupervisionRequestAt = Date.now();
+    }
+  });
+
+  supervisionQueue = run.catch(() => {});
+  return run;
+}
+
 async function startSupervisionWithRetry(telephonySessionId, partyId, extensionId) {
   const maxAttempts = 7;
   const delayMs = 2500;
@@ -263,7 +282,9 @@ async function startSupervisionWithRetry(telephonySessionId, partyId, extensionI
       }
       const authStatus = getAuthStatus();
       console.log(`[rc-auth] token valid=${authStatus.valid} expiresAt=${authStatus.expiresAt} refreshStatus=${authStatus.valid ? 'not-needed' : 'needed'}`);
-      const result = await startSupervision(telephonySessionId, partyId, extensionId, attempt);
+      const result = await runWithSupervisionRateLimit(() =>
+        startSupervision(telephonySessionId, partyId, extensionId, attempt)
+      );
       setCallStatus(telephonySessionId, 'invite_waiting');
       return result;
     } catch (err) {
