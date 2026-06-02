@@ -233,7 +233,7 @@ function scheduleInviteWaitTimeout(callId) {
   inviteWaitTimers.set(callId, setTimeout(() => {
     inviteWaitTimers.delete(callId);
     const call = getCall(callId);
-    if (!call || call.status !== 'invite_waiting') return;
+    if (!call || !['supervise_pending', 'invite_waiting'].includes(call.status)) return;
 
     console.warn(`[supervise] SIP INVITE wait timed out session=${call.telephonySessionId} party=${call.partyId}`);
     setCallStatus(callId, 'failed');
@@ -252,6 +252,7 @@ async function startSupervisionWithRetry(telephonySessionId, partyId, extensionI
   const delayMs = 2500;
 
   setCallStatus(telephonySessionId, 'supervise_pending');
+  scheduleInviteWaitTimeout(telephonySessionId);
   await sleep(INITIAL_SUPERVISE_DELAY_MS);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -264,7 +265,6 @@ async function startSupervisionWithRetry(telephonySessionId, partyId, extensionI
       console.log(`[rc-auth] token valid=${authStatus.valid} expiresAt=${authStatus.expiresAt} refreshStatus=${authStatus.valid ? 'not-needed' : 'needed'}`);
       const result = await startSupervision(telephonySessionId, partyId, extensionId, attempt);
       setCallStatus(telephonySessionId, 'invite_waiting');
-      scheduleInviteWaitTimeout(telephonySessionId);
       return result;
     } catch (err) {
       if (isTerminalSessionError(err) || !isWrongStateError(err) || attempt === maxAttempts) {

@@ -4,6 +4,7 @@
  */
 
 const activeCalls = new Map();
+const invitePendingStatuses = new Set(['supervise_pending', 'invite_waiting']);
 
 export function addCall(callId, data) {
   activeCalls.set(callId, {
@@ -94,7 +95,7 @@ export function getCallBySessionId(sessionId) {
 export function getPendingCallCount() {
   let count = 0;
   for (const call of activeCalls.values()) {
-    if (call.status === 'invite_waiting') {
+    if (invitePendingStatuses.has(call.status)) {
       count += 1;
     }
   }
@@ -102,20 +103,20 @@ export function getPendingCallCount() {
 }
 
 /**
- * Returns calls waiting for SIP INVITE after a successful supervision request.
+ * Returns calls that can receive the SIP INVITE RingCentral sends during supervise.
  */
 export function getInviteWaitingCalls() {
-  return Array.from(activeCalls.values()).filter((call) => call.status === 'invite_waiting');
+  return Array.from(activeCalls.values()).filter((call) => invitePendingStatuses.has(call.status));
 }
 
 /**
- * Returns the oldest call in "invite_waiting" state.
+ * Returns the oldest call waiting for SIP INVITE.
  * Used to match incoming INVITEs to pending supervisions.
  */
 export function getOldestPendingCall() {
   let oldest = null;
   for (const call of activeCalls.values()) {
-    if (call.status === 'invite_waiting') {
+    if (invitePendingStatuses.has(call.status)) {
       if (!oldest || call.startTime < oldest.startTime) {
         oldest = call;
       }

@@ -91,13 +91,17 @@ async function _renewSubscription() {
   return data;
 }
 
-export async function ensureWebhookSubscriptionActive() {
+export async function ensureWebhookSubscriptionActive({ createIfMissing = false } = {}) {
   if (!config.server.webhookUrl) {
     console.log('[rc-subscription] subscription id=none expiresAt=null renewalStatus=disabled');
     return null;
   }
 
   if (!subscriptionId) {
+    if (!createIfMissing) {
+      console.warn('[rc-subscription] subscription id=none expiresAt=null renewalStatus=missing');
+      return null;
+    }
     console.warn('[rc-subscription] subscription id=none expiresAt=null renewalStatus=missing; registering');
     return registerWebhookSubscription();
   }
