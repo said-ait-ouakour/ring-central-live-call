@@ -18,7 +18,7 @@ export function addCall(callId, data) {
     assemblyWs: null,
     transcript: [],
     startTime: new Date().toISOString(),
-    status: 'supervising',
+    status: data.status || 'detected',
   });
   return activeCalls.get(callId);
 }
@@ -31,8 +31,16 @@ export function setCallSession(callId, callSession) {
   const call = activeCalls.get(callId);
   if (call) {
     call.callSession = callSession;
-    call.status = 'connected';
+    call.status = 'active';
   }
+}
+
+export function setCallStatus(callId, status) {
+  const call = activeCalls.get(callId);
+  if (call) {
+    call.status = status;
+  }
+  return call;
 }
 
 export function setAssemblyWs(callId, assemblyWs) {
@@ -52,10 +60,10 @@ export function addTranscriptEntry(callId, entry) {
   }
 }
 
-export function removeCall(callId) {
+export function removeCall(callId, finalStatus = 'ended') {
   const call = activeCalls.get(callId);
   if (call) {
-    call.status = 'ended';
+    call.status = finalStatus;
     activeCalls.delete(callId);
   }
   return call;
@@ -86,7 +94,7 @@ export function getCallBySessionId(sessionId) {
 export function getPendingCallCount() {
   let count = 0;
   for (const call of activeCalls.values()) {
-    if (call.status === 'supervising') {
+    if (call.status === 'invite_waiting') {
       count += 1;
     }
   }
@@ -94,13 +102,20 @@ export function getPendingCallCount() {
 }
 
 /**
- * Returns the oldest call in "supervising" state (waiting for SIP INVITE).
+ * Returns calls waiting for SIP INVITE after a successful supervision request.
+ */
+export function getInviteWaitingCalls() {
+  return Array.from(activeCalls.values()).filter((call) => call.status === 'invite_waiting');
+}
+
+/**
+ * Returns the oldest call in "invite_waiting" state.
  * Used to match incoming INVITEs to pending supervisions.
  */
 export function getOldestPendingCall() {
   let oldest = null;
   for (const call of activeCalls.values()) {
-    if (call.status === 'supervising') {
+    if (call.status === 'invite_waiting') {
       if (!oldest || call.startTime < oldest.startTime) {
         oldest = call;
       }

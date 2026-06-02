@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const Softphone = require('ringcentral-softphone').default;
 import {
+  getInviteWaitingCalls,
   getOldestPendingCall,
   setCallSession,
   removeCall,
@@ -87,14 +88,81 @@ export async function ensureSoftphoneRegistered() {
   return registerSoftphone('pre-supervise');
 }
 
+function safeHeaderValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (typeof value === 'object') {
+    return value.value || value.uri || value.address || value.raw || null;
+  }
+  return null;
+}
+
+function pickHeader(headers, names) {
+  if (!headers) return null;
+  for (const name of names) {
+    const value = headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()];
+    if (Array.isArray(value) && value.length > 0) return safeHeaderValue(value[0]);
+    const normalized = safeHeaderValue(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function getInviteDiagnostics(inviteMessage) {
+  const headers = inviteMessage?.headers || inviteMessage?.request?.headers || inviteMessage?.message?.headers;
+  return {
+    keys: Object.keys(inviteMessage || {}),
+    callId: inviteMessage?.callId || inviteMessage?.id || pickHeader(headers, ['Call-ID', 'call-id']),
+    sessionId: inviteMessage?.sessionId || pickHeader(headers, ['Session-ID', 'session-id']),
+    from: safeHeaderValue(inviteMessage?.from) || pickHeader(headers, ['From', 'from']),
+    to: safeHeaderValue(inviteMessage?.to) || pickHeader(headers, ['To', 'to']),
+    contact: pickHeader(headers, ['Contact', 'contact']),
+    assertedIdentity: pickHeader(headers, ['P-Asserted-Identity', 'p-asserted-identity']),
+    replaces: pickHeader(headers, ['Replaces', 'replaces']),
+  };
+}
+
+function resolvePendingCallForInvite(inviteMessage) {
+  const pendingCalls = getInviteWaitingCalls();
+  const diagnostics = getInviteDiagnostics(inviteMessage);
+  const searchableValues = Object.values(diagnostics).filter((value) => typeof value === 'string');
+
+  console.log('[softphone-debug] INVITE diagnostics:', diagnostics);
+
+  const matchedCalls = pendingCalls.filter((call) =>
+    searchableValues.some((value) =>
+      value.includes(call.telephonySessionId) || value.includes(call.partyId)
+    )
+  );
+
+  if (matchedCalls.length === 1) {
+    console.log(`[softphone] Correlated INVITE to callId=${matchedCalls[0].callId} correlation=deterministic`);
+    return matchedCalls[0];
+  }
+
+  if (matchedCalls.length > 1) {
+    console.warn(`[softphone] Ambiguous deterministic INVITE correlation matches=${matchedCalls.map((c) => c.callId).join(',')}`);
+    return null;
+  }
+
+  if (pendingCalls.length === 1) {
+    const fallbackCall = getOldestPendingCall();
+    console.log(`[softphone] Correlated INVITE to callId=${fallbackCall.callId} correlation=single-pending-fallback`);
+    return fallbackCall;
+  }
+
+  console.warn(`[softphone] Cannot correlate INVITE pendingCalls=${pendingCalls.length} correlation=ambiguous`);
+  return null;
+}
+
 async function handleIncomingCall(inviteMessage) {
   let callId = null;
   let callSession = null;
 
   try {
-    const pendingCall = getOldestPendingCall();
+    const pendingCall = resolvePendingCallForInvite(inviteMessage);
     if (!pendingCall) {
-      console.warn('[softphone] Received INVITE but no pending supervision — declining');
+      console.warn('[softphone] Received INVITE but no unambiguous pending supervision — declining');
       await softphone.decline(inviteMessage);
       return;
     }
