@@ -6,6 +6,11 @@ function t(key) {
   return v === undefined || v === null ? '' : String(v).trim();
 }
 
+function intEnv(key, fallback) {
+  const parsed = parseInt(process.env[key] || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 const required = [
   'RC_CLIENT_ID',
   'RC_CLIENT_SECRET',
@@ -30,6 +35,10 @@ const config = {
     clientSecret: t('RC_CLIENT_SECRET'),
     serverUrl: t('RC_SERVER_URL'),
     jwtToken: t('RC_JWT_TOKEN'),
+    restMinSpacingMs: intEnv('RC_REST_MIN_SPACING_MS', 1200),
+    rest429PauseMs: intEnv('RC_REST_429_PAUSE_MS', 30000),
+    superviseInitialDelayMs: intEnv('RC_SUPERVISE_INITIAL_DELAY_MS', 1500),
+    superviseMaxAttempts: Math.max(1, intEnv('RC_SUPERVISE_MAX_ATTEMPTS', 5)),
   },
   sip: {
     domain: t('SIP_INFO_DOMAIN'),

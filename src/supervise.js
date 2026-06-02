@@ -5,8 +5,12 @@
 
 import { rcFetch } from './rc-auth.js';
 import config from './config.js';
-import { ensureWebhookSubscriptionActive } from './rc-subscription.js';
 import { ensureSoftphoneRegistered } from './softphone.js';
+
+let supervisorUserCache = null;
+let supervisorDeviceCache = null;
+let supervisorDeviceCacheLoadedAt = 0;
+const SUPERVISOR_DEVICE_CACHE_TTL_MS = 60 * 60 * 1000;
 
 function normalizeDevice(device) {
   return {
@@ -18,9 +22,28 @@ function normalizeDevice(device) {
   };
 }
 
-async function resolveSupervisorDeviceId() {
+function isDeviceCacheFresh() {
+  return (
+    supervisorDeviceCache &&
+    Date.now() - supervisorDeviceCacheLoadedAt < SUPERVISOR_DEVICE_CACHE_TTL_MS
+  );
+}
+
+export function invalidateSupervisorDeviceCache(reason = 'unknown') {
+  supervisorDeviceCache = null;
+  supervisorDeviceCacheLoadedAt = 0;
+  console.warn(`[rc-cache] device cache invalidated reason=${reason}`);
+}
+
+async function resolveSupervisorDeviceId({ forceRefresh = false } = {}) {
   const extId = config.supervisor.extensionId;
   const configuredDeviceId = String(config.supervisor.deviceId);
+
+  if (!forceRefresh && isDeviceCacheFresh()) {
+    console.log(`[rc-cache] device cache hit supervisorExtensionId=${extId} selectedDeviceId=${supervisorDeviceCache.id} deviceStatus=${supervisorDeviceCache.status || 'unknown'}`);
+    return supervisorDeviceCache.id;
+  }
+
   const path = `/restapi/v1.0/account/~/extension/${extId}/device`;
   const data = await rcFetch(path);
   const devices = (data.records || []).map(normalizeDevice);
@@ -32,12 +55,23 @@ async function resolveSupervisorDeviceId() {
     throw new Error(`Supervisor deviceId ${configuredDeviceId} was not found for supervisor extension ${extId}`);
   }
 
+  supervisorDeviceCache = selected;
+  supervisorDeviceCacheLoadedAt = Date.now();
+  console.log(`[rc-cache] device cache refresh supervisorExtensionId=${extId} selectedDeviceId=${selected.id} deviceStatus=${selected.status || 'unknown'}`);
+
   return selected.id;
 }
 
-async function logCurrentRingCentralUser() {
+export async function getCurrentRingCentralUser({ forceRefresh = false } = {}) {
+  if (!forceRefresh && supervisorUserCache) {
+    console.log(`[rc-cache] user cache hit extensionId=${supervisorUserCache.id || 'unknown'}`);
+    return supervisorUserCache;
+  }
+
   const data = await rcFetch('/restapi/v1.0/account/~/extension/~');
   console.log(`[rc-user] currentUserId=${data.contact?.id || data.id || 'unknown'} extensionId=${data.id || 'unknown'} accountId=${data.account?.id || 'unknown'} extensionNumber=${data.extensionNumber || 'unknown'}`);
+  supervisorUserCache = data;
+  console.log(`[rc-cache] user cache refresh extensionId=${data.id || 'unknown'}`);
   return data;
 }
 
@@ -52,9 +86,7 @@ async function logCurrentRingCentralUser() {
 export async function startSupervision(telephonySessionId, partyId, agentExtensionId, attempt = 1) {
   const path = `/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/supervise`;
 
-  await ensureWebhookSubscriptionActive();
   await ensureSoftphoneRegistered();
-  await logCurrentRingCentralUser();
   const supervisorDeviceId = await resolveSupervisorDeviceId();
 
   console.log(`[supervise] sessionId=${telephonySessionId} partyId=${partyId} attempt=${attempt} agentExtensionId=${agentExtensionId}`);
@@ -70,6 +102,11 @@ export async function startSupervision(telephonySessionId, partyId, agentExtensi
 
   console.log(`[supervise] Supervision started. Supervisor party:`, result?.party?.id || 'unknown');
   return result;
+}
+
+export async function warmSupervisorCache() {
+  await getCurrentRingCentralUser();
+  await resolveSupervisorDeviceId({ forceRefresh: true });
 }
 
 /**

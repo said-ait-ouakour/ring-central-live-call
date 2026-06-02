@@ -13,7 +13,12 @@ import express from 'express';
 import cors from 'cors';
 import config from './config.js';
 import { initSoftphone } from './softphone.js';
-import { startSupervision, listSupervisorDevices } from './supervise.js';
+import {
+  startSupervision,
+  listSupervisorDevices,
+  invalidateSupervisorDeviceCache,
+  warmSupervisorCache,
+} from './supervise.js';
 import { setupWsServer } from './ws-broadcaster.js';
 import { addCall, getAllCalls, getCall, removeCall, setCallStatus } from './call-store.js';
 import { closeTranscriber } from './transcriber.js';
@@ -188,12 +193,8 @@ app.post('/webhook/ringcentral', express.json(), async (req, res) => {
 const _inFlightSupervisions = new Set();
 const _recentSupervisions = new Map();
 const SUPERVISION_DEDUPE_TTL_MS = 10 * 60 * 1000;
-const INITIAL_SUPERVISE_DELAY_MS = 1500;
 const INVITE_WAIT_TIMEOUT_MS = 30_000;
-const SUPERVISION_MIN_SPACING_MS = 1200;
 const inviteWaitTimers = new Map();
-let supervisionQueue = Promise.resolve();
-let lastSupervisionRequestAt = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -207,16 +208,27 @@ function isTerminalSessionError(err) {
   return err?.message?.includes('CMN-102') || err?.message?.includes('sessionId] is not found') || err?.message?.includes('failed (404)');
 }
 
+function isRateLimitError(err) {
+  return err?.status === 429 || err?.message?.includes('CMN-301') || err?.message?.includes('Request rate exceeded') || err?.message?.includes('failed (429)');
+}
+
+function isDeviceReachabilityError(err) {
+  return err?.message?.includes('TAS-119') || err?.message?.includes('TAS-120') || err?.message?.includes("Can't reach deviceId") || err?.message?.includes("registered deviceId");
+}
+
 function isEndedPartyStatus(statusCode) {
   return ['Disconnected', 'Gone', 'Voicemail', 'Parked'].includes(statusCode);
 }
 
-async function assertSessionStillSupervisable(telephonySessionId, partyId) {
+function assertLocalSupervisionStillActive(telephonySessionId) {
   const call = getCall(telephonySessionId);
   if (!call || call.status === 'ended' || call.status === 'failed') {
     throw new Error(`Supervision stopped locally for session=${telephonySessionId}`);
   }
+  return call;
+}
 
+async function fetchSessionForFailureDiagnosis(telephonySessionId, partyId) {
   const session = await rcFetch(`/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}`);
   const party = session?.parties?.find((p) => p.id === partyId);
 
@@ -229,6 +241,11 @@ async function assertSessionStillSupervisable(telephonySessionId, partyId) {
   }
 
   return session;
+}
+
+function getBackoffMs(attempt) {
+  const base = [2000, 4000, 8000, 12000][Math.min(attempt - 1, 3)];
+  return base + Math.floor(Math.random() * 750);
 }
 
 function scheduleInviteWaitTimeout(callId) {
@@ -250,49 +267,51 @@ function clearInviteWaitTimeout(callId) {
   inviteWaitTimers.delete(callId);
 }
 
-async function runWithSupervisionRateLimit(fn) {
-  const run = supervisionQueue.then(async () => {
-    const waitMs = Math.max(0, SUPERVISION_MIN_SPACING_MS - (Date.now() - lastSupervisionRequestAt));
-    if (waitMs > 0) await sleep(waitMs);
-
-    try {
-      return await fn();
-    } finally {
-      lastSupervisionRequestAt = Date.now();
-    }
-  });
-
-  supervisionQueue = run.catch(() => {});
-  return run;
-}
-
 async function startSupervisionWithRetry(telephonySessionId, partyId, extensionId) {
-  const maxAttempts = 7;
-  const delayMs = 2500;
+  const maxAttempts = config.rc.superviseMaxAttempts;
 
-  setCallStatus(telephonySessionId, 'supervise_pending');
-  scheduleInviteWaitTimeout(telephonySessionId);
-  await sleep(INITIAL_SUPERVISE_DELAY_MS);
+  setCallStatus(telephonySessionId, 'queued');
+  console.log(`[supervise-job] state=queued session=${telephonySessionId} party=${partyId} initialDelayMs=${config.rc.superviseInitialDelayMs}`);
+  await sleep(config.rc.superviseInitialDelayMs);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      await assertSessionStillSupervisable(telephonySessionId, partyId);
+      assertLocalSupervisionStillActive(telephonySessionId);
       if (attempt > 1) {
         console.log(`[webhook] Retrying supervision attempt=${attempt}/${maxAttempts} session=${telephonySessionId}`);
       }
       const authStatus = getAuthStatus();
       console.log(`[rc-auth] token valid=${authStatus.valid} expiresAt=${authStatus.expiresAt} refreshStatus=${authStatus.valid ? 'not-needed' : 'needed'}`);
-      const result = await runWithSupervisionRateLimit(() =>
-        startSupervision(telephonySessionId, partyId, extensionId, attempt)
-      );
+      setCallStatus(telephonySessionId, 'supervise_pending');
+      console.log(`[supervise-job] state=supervising session=${telephonySessionId} party=${partyId} attempt=${attempt}/${maxAttempts}`);
+      const result = await startSupervision(telephonySessionId, partyId, extensionId, attempt);
       setCallStatus(telephonySessionId, 'invite_waiting');
+      scheduleInviteWaitTimeout(telephonySessionId);
+      console.log(`[supervise-job] state=invite_waiting session=${telephonySessionId} party=${partyId}`);
       return result;
     } catch (err) {
-      if (isTerminalSessionError(err) || !isWrongStateError(err) || attempt === maxAttempts) {
+      if (isDeviceReachabilityError(err)) {
+        invalidateSupervisorDeviceCache(err.message);
+      }
+
+      if (isTerminalSessionError(err)) {
         throw err;
       }
-      console.warn(`[webhook] RingCentral session not ready yet attempt=${attempt}/${maxAttempts} session=${telephonySessionId}: ${err.message}`);
-      await sleep(delayMs);
+
+      const retryable = isWrongStateError(err) || isRateLimitError(err) || isDeviceReachabilityError(err);
+      if (!retryable || attempt === maxAttempts) {
+        if (isWrongStateError(err)) {
+          await fetchSessionForFailureDiagnosis(telephonySessionId, partyId).catch((diagnosisErr) => {
+            console.warn(`[supervise-job] diagnosis failed session=${telephonySessionId}: ${diagnosisErr.message}`);
+          });
+        }
+        throw err;
+      }
+
+      const nextRetryMs = getBackoffMs(attempt);
+      console.warn(`[supervise-job] state=retry_wait session=${telephonySessionId} party=${partyId} attempt=${attempt}/${maxAttempts} nextRetryMs=${nextRetryMs}: ${err.message}`);
+      setCallStatus(telephonySessionId, 'queued');
+      await sleep(nextRetryMs);
     }
   }
 
@@ -306,6 +325,18 @@ async function handleTelephonyEvent(event) {
   const { telephonySessionId, parties } = body;
   const monitoredExtId = config.supervisor.monitoredExtensionId;
   const supervisorExtId = config.supervisor.extensionId;
+  const existingCall = getCall(telephonySessionId);
+
+  if (existingCall) {
+    const existingParty = parties?.find((p) => p.id === existingCall.partyId);
+    if (existingParty && isEndedPartyStatus(existingParty.status?.code)) {
+      console.log(`[webhook] Supervised party ended; cancelling supervision session=${telephonySessionId} party=${existingCall.partyId} status=${existingParty.status?.code}`);
+      setCallStatus(telephonySessionId, 'ended');
+      clearInviteWaitTimeout(telephonySessionId);
+      removeCall(telephonySessionId, 'ended');
+      return;
+    }
+  }
 
   // Find the agent's party that just got answered.
   // Require extensionId to be present — external callers have no extensionId.
@@ -370,6 +401,9 @@ async function start() {
 
     console.log('[bridge] Registering SIP softphone with RingCentral...');
     await initSoftphone();
+    await warmSupervisorCache().catch((err) => {
+      console.warn(`[rc-cache] startup warm failed; will retry lazily: ${err.message}`);
+    });
 
     await new Promise((resolve) => {
       server.listen(config.server.port, resolve);

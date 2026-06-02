@@ -1,7 +1,9 @@
 import config from './config.js';
 import { getCall } from './call-store.js';
+import { rcFetch } from './rc-auth.js';
 
 let warnedMissingConfig = false;
+const extensionProfileCache = new Map();
 
 function enabled() {
   const ok = Boolean(config.supabase.url && config.supabase.serviceRoleKey);
@@ -44,7 +46,46 @@ async function getAdvisorByExtension(extensionId) {
   const rows = await supabaseFetch(
     `users?select=id,fullName,ringcentral_id&ringcentral_id=eq.${numericExtensionId}&limit=1`
   );
-  return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  return Array.isArray(rows) && rows.length > 0 ? { ...rows[0], crmUserId: rows[0].id } : null;
+}
+
+function fullNameFromExtensionProfile(profile) {
+  const contact = profile?.contact || {};
+  return (
+    [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim() ||
+    profile?.name ||
+    contact.name ||
+    ''
+  );
+}
+
+async function getRingCentralExtensionProfile(extensionId) {
+  if (!extensionId) return null;
+  const cacheKey = String(extensionId);
+  if (extensionProfileCache.has(cacheKey)) return extensionProfileCache.get(cacheKey);
+
+  try {
+    const profile = await rcFetch(`/restapi/v1.0/account/~/extension/${encodeURIComponent(cacheKey)}`);
+    const name = fullNameFromExtensionProfile(profile);
+    const enriched = name ? { ringCentralExtensionId: profile?.id, fullName: name } : null;
+    extensionProfileCache.set(cacheKey, enriched);
+    console.log(`[supabase-sync] RC extension profile extensionId=${cacheKey} name=${name || 'unknown'}`);
+    return enriched;
+  } catch (err) {
+    console.warn(`[supabase-sync] Failed to load RC extension profile extensionId=${cacheKey}: ${err.message}`);
+    extensionProfileCache.set(cacheKey, null);
+    return null;
+  }
+}
+
+async function resolveAdvisor(extensionId, fallbackName) {
+  const advisor = await getAdvisorByExtension(extensionId);
+  if (advisor?.fullName) return advisor;
+
+  const rcProfile = await getRingCentralExtensionProfile(extensionId);
+  if (rcProfile?.fullName) return rcProfile;
+
+  return fallbackName ? { fullName: fallbackName } : null;
 }
 
 export async function syncActiveCallStarted(callId) {
@@ -52,12 +93,12 @@ export async function syncActiveCallStarted(callId) {
   if (!call || !enabled()) return;
 
   try {
-    const advisor = await getAdvisorByExtension(call.extensionId);
+    const advisor = await resolveAdvisor(call.extensionId, call.advisorName);
     const payload = {
       session_id: call.callId,
       telephony_session_id: call.telephonySessionId,
       advisor_extension_id: String(call.extensionId || ''),
-      advisor_id: advisor?.id || null,
+      advisor_id: advisor?.crmUserId || null,
       advisor_name: advisor?.fullName || call.advisorName || null,
       client_number: call.clientPhone || 'Unknown',
       client_name: null,
@@ -85,7 +126,7 @@ export async function syncTranscriptEntry(callId, entry) {
   if (!call || !entry?.isFinal || !entry?.text || !enabled()) return;
 
   try {
-    const advisor = await getAdvisorByExtension(call.extensionId);
+    const advisor = await resolveAdvisor(call.extensionId, call.advisorName);
     await supabaseFetch('live_call_transcripts', {
       method: 'POST',
       headers: { Prefer: 'return=minimal' },
