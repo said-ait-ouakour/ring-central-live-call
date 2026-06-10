@@ -25,6 +25,7 @@ import { closeTranscriber } from './transcriber.js';
 import { registerWebhookSubscription } from './rc-subscription.js';
 import { getAuthStatus } from './rc-auth.js';
 import { rcFetch } from './rc-auth.js';
+import { endedCallWebhookEnabled, forwardEndedCall } from './ended-call-webhook.js';
 
 const app = express();
 const server = createServer(app);
@@ -192,6 +193,8 @@ app.post('/webhook/ringcentral', express.json(), async (req, res) => {
 // Tracks session/party pairs so repeated webhook events don't duplicate attempts.
 const _inFlightSupervisions = new Set();
 const _recentSupervisions = new Map();
+const _inFlightEndedCallForwardings = new Set();
+const _recentEndedCallForwardings = new Map();
 const SUPERVISION_DEDUPE_TTL_MS = 10 * 60 * 1000;
 const INVITE_WAIT_TIMEOUT_MS = 30_000;
 const inviteWaitTimers = new Map();
@@ -218,6 +221,80 @@ function isDeviceReachabilityError(err) {
 
 function isEndedPartyStatus(statusCode) {
   return ['Disconnected', 'Gone', 'Voicemail', 'Parked'].includes(statusCode);
+}
+
+function isRelevantAgentParty(party) {
+  const monitoredExtId = config.supervisor.monitoredExtensionId;
+  const supervisorExtId = config.supervisor.extensionId;
+  return Boolean(
+    party?.extensionId &&
+    party.extensionId !== supervisorExtId &&
+    (!monitoredExtId || party.extensionId === monitoredExtId)
+  );
+}
+
+function getEndedCallEventTime(event, body) {
+  return event?.eventTime || body?.eventTime || body?.creationTime || new Date().toISOString();
+}
+
+function buildEndedCallPayload({ event, body, party, bridgeCallKnown }) {
+  return {
+    eventType: 'ringcentral.call_ended',
+    source: 'rc-audio-bridge',
+    dedupeKey: `${body.telephonySessionId}:${party.id}:ended`,
+    telephonySessionId: body.telephonySessionId,
+    partyId: party.id,
+    extensionId: party.extensionId || null,
+    direction: party.direction || null,
+    statusCode: party.status?.code || null,
+    eventTime: getEndedCallEventTime(event, body),
+    from: party.from ? {
+      phoneNumber: party.from.phoneNumber || null,
+      extensionId: party.from.extensionId || null,
+      name: party.from.name || null,
+    } : null,
+    to: party.to ? {
+      phoneNumber: party.to.phoneNumber || null,
+      extensionId: party.to.extensionId || null,
+      name: party.to.name || null,
+    } : null,
+    bridgeCallKnown,
+  };
+}
+
+async function forwardEndedCallEvents(event, body) {
+  if (!endedCallWebhookEnabled()) return;
+
+  const relevantEndedParties = (body.parties || []).filter((party) =>
+    isRelevantAgentParty(party) && isEndedPartyStatus(party.status?.code)
+  );
+
+  for (const party of relevantEndedParties) {
+    const payload = buildEndedCallPayload({
+      event,
+      body,
+      party,
+      bridgeCallKnown: Boolean(getCall(body.telephonySessionId)),
+    });
+    const recentUntil = _recentEndedCallForwardings.get(payload.dedupeKey) || 0;
+    if (recentUntil > Date.now() || _inFlightEndedCallForwardings.has(payload.dedupeKey)) {
+      continue;
+    }
+
+    _inFlightEndedCallForwardings.add(payload.dedupeKey);
+    try {
+      await forwardEndedCall(payload);
+      _recentEndedCallForwardings.set(
+        payload.dedupeKey,
+        Date.now() + config.server.endedCallWebhookDedupeTtlMs,
+      );
+      setTimeout(() => _recentEndedCallForwardings.delete(payload.dedupeKey), config.server.endedCallWebhookDedupeTtlMs);
+    } catch (err) {
+      console.error(`[ended-call] Failed to forward dedupeKey=${payload.dedupeKey}: ${err.message}`);
+    } finally {
+      _inFlightEndedCallForwardings.delete(payload.dedupeKey);
+    }
+  }
 }
 
 function assertLocalSupervisionStillActive(telephonySessionId) {
@@ -322,9 +399,9 @@ async function handleTelephonyEvent(event) {
   const body = event?.body;
   if (!body?.telephonySessionId) return;
 
+  await forwardEndedCallEvents(event, body);
+
   const { telephonySessionId, parties } = body;
-  const monitoredExtId = config.supervisor.monitoredExtensionId;
-  const supervisorExtId = config.supervisor.extensionId;
   const existingCall = getCall(telephonySessionId);
 
   if (existingCall) {
@@ -342,9 +419,7 @@ async function handleTelephonyEvent(event) {
   // Require extensionId to be present — external callers have no extensionId.
   const agentParty = parties?.find((p) =>
     p.status?.code === 'Answered' &&
-    p.extensionId &&
-    p.extensionId !== supervisorExtId &&
-    (!monitoredExtId || p.extensionId === monitoredExtId)
+    isRelevantAgentParty(p)
   );
 
   if (!agentParty) return;
@@ -415,6 +490,9 @@ async function start() {
     console.log(`   WS      →  ws://0.0.0.0:${config.server.port}/ws`);
     console.log(`   Health  →  http://0.0.0.0:${config.server.port}/health`);
     console.log(`   Webhook →  http://0.0.0.0:${config.server.port}/webhook/ringcentral`);
+    if (config.server.endedCallWebhookUrl) {
+      console.log(`   Ended   →  ${config.server.endedCallWebhookUrl}`);
+    }
     console.log('═══════════════════════════════════════════════════');
 
     // Register RC webhook subscription so calls are auto-detected

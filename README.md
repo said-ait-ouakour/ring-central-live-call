@@ -100,6 +100,41 @@ Connect to `ws://bridge-host:3100/ws?apiKey=YOUR_BRIDGE_API_KEY`
 { "type": "error", "message": "..." }
 ```
 
+## Optional Ended-Call Forwarding
+
+If `ENDED_CALL_WEBHOOK_URL` is configured, the bridge also forwards deduped RingCentral terminal call events to an external webhook such as n8n. This is separate from `RC_WEBHOOK_URL`:
+
+- `RC_WEBHOOK_URL` is the public base URL RingCentral calls into.
+- `ENDED_CALL_WEBHOOK_URL` is the full outbound n8n webhook URL the bridge calls after an ended call is detected.
+
+The bridge responds to RingCentral immediately, then forwards the ended-call event asynchronously so live coaching is not blocked.
+
+Example payload:
+
+```json
+{
+  "eventType": "ringcentral.call_ended",
+  "source": "rc-audio-bridge",
+  "dedupeKey": "s-abc123:p-def456:ended",
+  "telephonySessionId": "s-abc123",
+  "partyId": "p-def456",
+  "extensionId": "12345",
+  "direction": "Inbound",
+  "statusCode": "Disconnected",
+  "eventTime": "2026-06-10T10:15:00.000Z",
+  "from": { "phoneNumber": "+1234567890", "extensionId": null, "name": null },
+  "to": { "phoneNumber": null, "extensionId": "12345", "name": "Agent Name" },
+  "bridgeCallKnown": true
+}
+```
+
+Recommended n8n flow:
+
+- Accept the webhook and persist the `dedupeKey`.
+- Push the event into a durable queue.
+- Delay processing before fetching RingCentral call records or recordings.
+- Apply throttling and retry in the worker path to avoid RingCentral rate limits.
+
 ## Deployment
 
 This service needs an **always-on server** (not serverless). Recommended free options:
@@ -109,3 +144,10 @@ This service needs an **always-on server** (not serverless). Recommended free op
 - **Fly.io** — free tier with 3 small VMs
 
 Set the required environment variables in the hosting platform's dashboard (see `.env.example`). SIP fields are optional when the RingCentral app can read device sip-info.
+
+Optional SIP resilience tuning:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIP_REGISTRATION_TIMEOUT_MS` | `15000` | Max time to wait for SIP registration before recreating the softphone and retrying |
+| `SIP_MAX_REGISTRATION_AGE_MS` | `240000` | Age after which SIP registration is refreshed before a supervision request |

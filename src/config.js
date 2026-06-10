@@ -46,6 +46,8 @@ const config = {
     username: t('SIP_INFO_USERNAME'),
     password: t('SIP_INFO_PASSWORD'),
     authorizationId: t('SIP_INFO_AUTHORIZATION_ID'),
+    registrationTimeoutMs: intEnv('SIP_REGISTRATION_TIMEOUT_MS', 15000),
+    maxRegistrationAgeMs: intEnv('SIP_MAX_REGISTRATION_AGE_MS', 4 * 60 * 1000),
   },
   supervisor: {
     extensionId: t('RC_SUPERVISOR_EXTENSION_ID'),
@@ -64,6 +66,10 @@ const config = {
     apiKey: t('BRIDGE_API_KEY'),
     crmUrl: t('CRM_URL') || 'http://localhost:3000',
     webhookUrl: t('RC_WEBHOOK_URL'),
+    endedCallWebhookUrl: t('ENDED_CALL_WEBHOOK_URL'),
+    endedCallWebhookBearerToken: t('ENDED_CALL_WEBHOOK_BEARER_TOKEN'),
+    endedCallWebhookTimeoutMs: intEnv('ENDED_CALL_WEBHOOK_TIMEOUT_MS', 5000),
+    endedCallWebhookDedupeTtlMs: intEnv('ENDED_CALL_WEBHOOK_DEDUPE_TTL_MS', 30 * 60 * 1000),
   },
 };
 
