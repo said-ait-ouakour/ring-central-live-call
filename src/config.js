@@ -11,18 +11,26 @@ function intEnv(key, fallback) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+const bridgeMode = t('BRIDGE_MODE').toLowerCase() || 'full';
+const ringCentralEnabled = bridgeMode !== 'meetings' && t('DISABLE_RINGCENTRAL').toLowerCase() !== 'true';
+
 const required = [
-  'RC_CLIENT_ID',
-  'RC_CLIENT_SECRET',
-  'RC_SERVER_URL',
-  'RC_JWT_TOKEN',
-  'RC_SUPERVISOR_EXTENSION_ID',
-  'RC_SUPERVISOR_DEVICE_ID',
-  'ASSEMBLYAI_API_KEY',
   'BRIDGE_API_KEY',
 ];
+if (ringCentralEnabled) required.push('ASSEMBLYAI_API_KEY');
+if (ringCentralEnabled) {
+  required.push(
+    'RC_CLIENT_ID',
+    'RC_CLIENT_SECRET',
+    'RC_SERVER_URL',
+    'RC_JWT_TOKEN',
+    'RC_SUPERVISOR_EXTENSION_ID',
+    'RC_SUPERVISOR_DEVICE_ID',
+  );
+}
+const uniqueRequired = [...new Set(required)];
 
-const missing = required.filter((key) => !t(key));
+const missing = uniqueRequired.filter((key) => !t(key));
 if (missing.length > 0) {
   console.error(`Missing required environment variables:\n  ${missing.join('\n  ')}`);
   console.error('\nCopy .env.example to .env and fill in all values.');
@@ -30,6 +38,10 @@ if (missing.length > 0) {
 }
 
 const config = {
+  bridgeMode,
+  ringCentral: {
+    enabled: ringCentralEnabled,
+  },
   rc: {
     clientId: t('RC_CLIENT_ID'),
     clientSecret: t('RC_CLIENT_SECRET'),
@@ -70,6 +82,22 @@ const config = {
     endedCallWebhookBearerToken: t('ENDED_CALL_WEBHOOK_BEARER_TOKEN'),
     endedCallWebhookTimeoutMs: intEnv('ENDED_CALL_WEBHOOK_TIMEOUT_MS', 5000),
     endedCallWebhookDedupeTtlMs: intEnv('ENDED_CALL_WEBHOOK_DEDUPE_TTL_MS', 30 * 60 * 1000),
+  },
+  meetings: {
+    firefliesApiKey: t('FIREFLIES_API_KEY'),
+    firefliesApiUrl: t('FIREFLIES_API_URL') || 'https://api.fireflies.ai/graphql',
+    firefliesRealtimeWsUrl: t('FIREFLIES_REALTIME_WS_URL') || 'wss://api.fireflies.ai',
+    crmBaseUrl: t('CRM_BASE_URL') || t('CRM_URL'),
+    crmNotifyApiKey: t('CRM_MEETING_NOTIFY_API_KEY'),
+    vercelProtectionBypassSecret: t('VERCEL_AUTOMATION_BYPASS_SECRET'),
+    activeMeetingsPollMs: intEnv('FIREFLIES_ACTIVE_MEETINGS_POLL_MS', 20_000),
+    activeMeetingsMissesBeforeEnd: Math.max(1, intEnv('FIREFLIES_ACTIVE_MEETINGS_MISSES_BEFORE_END', 3)),
+    activeMeetingsTeamBatchSize: Math.max(1, intEnv('FIREFLIES_ACTIVE_MEETINGS_TEAM_BATCH_SIZE', 3)),
+    activeMeetingsDiscoveryConcurrency: Math.max(1, intEnv('FIREFLIES_ACTIVE_MEETINGS_DISCOVERY_CONCURRENCY', 2)),
+    automationWebhookSecret: t('AUTOMATION_WEBHOOK_SECRET'),
+    factfindDebounceMs: intEnv('LIVE_FACTFIND_DEBOUNCE_MS', 20_000),
+    factfindRequestTimeoutMs: intEnv('LIVE_FACTFIND_REQUEST_TIMEOUT_MS', 15_000),
+    factfindMaxLines: intEnv('LIVE_FACTFIND_MAX_LINES', 200),
   },
 };
 
