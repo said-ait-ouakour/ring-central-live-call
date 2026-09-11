@@ -26,13 +26,14 @@ import { registerWebhookSubscription } from './rc-subscription.js';
 import { getAuthStatus } from './rc-auth.js';
 import { rcFetch } from './rc-auth.js';
 import { endedCallWebhookEnabled, forwardEndedCall } from './ended-call-webhook.js';
+import { getActiveMeetings, superviseMeeting, startMeetingMonitor, stopMeeting, reconnectMeeting, stopAllMeetings } from './meeting-service.js';
 
 const app = express();
 const server = createServer(app);
 
 // ── Middleware ──────────────────────────────────────────────────
 app.use(cors({
-  origin: [config.server.crmUrl, 'http://localhost:3000', 'http://localhost:3001'],
+  origin: [config.server.crmUrl, config.meetings.crmBaseUrl, 'http://localhost:3000', 'http://localhost:3001'].filter(Boolean),
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'x-api-key'],
 }));
@@ -70,6 +71,9 @@ app.get('/health', (_req, res) => {
  * }
  */
 app.post('/api/supervise', authMiddleware, async (req, res) => {
+  if (!config.ringCentral.enabled) {
+    return res.status(503).json({ error: 'RingCentral integration is disabled in meeting-only mode' });
+  }
   try {
     const { telephonySessionId, partyId, extensionId, advisorName, clientPhone } = req.body;
 
@@ -121,6 +125,20 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
 });
 
 /**
+ * POST /api/meetings/supervise
+ * Starts Fireflies realtime monitoring for a CRM Teams meeting.
+ */
+app.post('/api/meetings/supervise', authMiddleware, async (req, res) => {
+  try {
+    const result = await superviseMeeting(req.body);
+    res.status(result.created ? 200 : 200).json({ success: true, ...result });
+  } catch (err) {
+    console.error('[api] Meeting supervision error:', err);
+    res.status(500).json({ error: 'Failed to start meeting supervision', details: err.message });
+  }
+});
+
+/**
  * GET /api/calls
  * Returns all active monitored calls.
  */
@@ -154,6 +172,30 @@ app.delete('/api/calls/:callId', authMiddleware, (req, res) => {
   res.json({ success: true, message: `Stopped monitoring callId=${callId}` });
 });
 
+/** Stop Fireflies monitoring and finalize the live FactFind draft. */
+app.delete('/api/meetings/:sessionId', authMiddleware, async (req, res) => {
+  try {
+    const meeting = await stopMeeting(req.params.sessionId);
+    if (!meeting) return res.status(404).json({ error: 'Meeting not found' });
+    res.json({ success: true, meeting });
+  } catch (err) {
+    console.error('[api] Meeting stop error:', err);
+    res.status(500).json({ error: 'Failed to stop meeting supervision', details: err.message });
+  }
+});
+
+/** Reconnect only the Fireflies socket without ending the meeting. */
+app.post('/api/meetings/:sessionId/reconnect', authMiddleware, (req, res) => {
+  const meeting = reconnectMeeting(req.params.sessionId);
+  if (!meeting) return res.status(404).json({ error: 'Active meeting not found' });
+  res.json({ success: true, meeting });
+});
+
+/** Return active Fireflies meetings for the CRM server-side adapter. */
+app.get('/api/meetings', authMiddleware, (_req, res) => {
+  res.json({ meetings: getActiveMeetings() });
+});
+
 /**
  * GET /api/devices
  * Debug endpoint: list supervisor's devices for finding the right device ID.
@@ -173,6 +215,10 @@ app.get('/api/devices', authMiddleware, async (_req, res) => {
  * RingCentral sends a Validation-Token header on first delivery; echo it back.
  */
 app.post('/webhook/ringcentral', express.json(), async (req, res) => {
+  if (!config.ringCentral.enabled) {
+    return res.status(404).send('RingCentral integration disabled');
+  }
+
   // Validation handshake — RC POSTs with this header when subscription is created
   const validationToken = req.headers['validation-token'];
   if (validationToken) {
@@ -474,17 +520,23 @@ async function start() {
   try {
     setupWsServer(server);
 
-    console.log('[bridge] Registering SIP softphone with RingCentral...');
-    await initSoftphone();
-    await warmSupervisorCache().catch((err) => {
-      console.warn(`[rc-cache] startup warm failed; will retry lazily: ${err.message}`);
-    });
+    if (config.ringCentral.enabled) {
+      console.log('[bridge] Registering SIP softphone with RingCentral...');
+      await initSoftphone();
+      await warmSupervisorCache().catch((err) => {
+        console.warn(`[rc-cache] startup warm failed; will retry lazily: ${err.message}`);
+      });
+    } else {
+      console.log('[bridge] Meeting-only mode enabled; RingCentral softphone and webhooks are disabled');
+    }
 
     await new Promise((resolve) => {
       server.listen(config.server.port, resolve);
     });
 
     console.log('═══════════════════════════════════════════════════');
+
+    if (config.bridgeMode === 'meetings') void startMeetingMonitor();
     console.log(' RC Audio Bridge is running');
     console.log(`   HTTP    →  http://0.0.0.0:${config.server.port}`);
     console.log(`   WS      →  ws://0.0.0.0:${config.server.port}/ws`);
@@ -496,7 +548,7 @@ async function start() {
     console.log('═══════════════════════════════════════════════════');
 
     // Register RC webhook subscription so calls are auto-detected
-    await registerWebhookSubscription();
+    if (config.ringCentral.enabled) await registerWebhookSubscription();
   } catch (err) {
     console.error('[bridge] Fatal startup error:', err);
     process.exit(1);
@@ -509,8 +561,10 @@ process.on('unhandledRejection', (err) => {
 
 process.on('SIGTERM', () => {
   console.log('[bridge] SIGTERM received — shutting down');
-  server.close();
-  process.exit(0);
+  void stopAllMeetings().finally(() => {
+    server.close();
+    process.exit(0);
+  });
 });
 
 start();

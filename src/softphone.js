@@ -21,6 +21,7 @@ import {
   setCallSession,
   removeCall,
 } from './call-store.js';
+import config from './config.js';
 import { loadSipCredentials } from './sip-credentials.js';
 import { connectTranscriber, closeTranscriber, sendAudioChunk } from './transcriber.js';
 import { broadcast } from './ws-broadcaster.js';
@@ -29,11 +30,19 @@ import { syncActiveCallEnded, syncActiveCallStarted } from './supabase-sync.js';
 let softphone = null;
 let lastRegisteredAt = 0;
 let registrationPromise = null;
+let registrationRecoveryPromise = null;
 
 export async function initSoftphone() {
+  await createSoftphone();
+  await registerSoftphone('startup');
+
+  return softphone;
+}
+
+async function createSoftphone() {
   const { domain, outboundProxy, username, password, authorizationId } = await loadSipCredentials();
 
-  softphone = new Softphone({
+  const nextSoftphone = new Softphone({
     domain,
     outboundProxy,
     username,
@@ -42,28 +51,81 @@ export async function initSoftphone() {
     codec: 'OPUS/16000',
   });
 
-  softphone.on('invite', async (inviteMessage) => {
+  nextSoftphone.on('invite', async (inviteMessage) => {
     console.log('[softphone] Incoming INVITE (supervised call audio)');
     handleIncomingCall(inviteMessage);
   });
 
-  await registerSoftphone('startup');
-
+  softphone = nextSoftphone;
   return softphone;
 }
 
-async function registerSoftphone(reason) {
+function createTimeoutError(reason, timeoutMs) {
+  const err = new Error(`SIP registration timed out reason=${reason} timeoutMs=${timeoutMs}`);
+  err.code = 'SIP_REGISTRATION_TIMEOUT';
+  return err;
+}
+
+function withTimeout(promise, timeoutMs, onTimeout) {
+  let timeout = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(onTimeout()), timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
+async function disposeSoftphone(reason, target = softphone) {
+  if (!target) return;
+
+  console.warn(`[softphone] Disposing SIP softphone reason=${reason}`);
+
+  try {
+    if (typeof target.unregister === 'function') {
+      await withTimeout(target.unregister(), 3000, () => createTimeoutError('unregister', 3000));
+    } else if (typeof target.deregister === 'function') {
+      await withTimeout(target.deregister(), 3000, () => createTimeoutError('deregister', 3000));
+    }
+  } catch (err) {
+    console.warn(`[softphone] SIP unregister skipped reason=${reason}: ${err.message}`);
+  }
+
+  for (const method of ['dispose', 'destroy', 'stop', 'close']) {
+    if (typeof target[method] !== 'function') continue;
+    try {
+      await target[method]();
+      break;
+    } catch (err) {
+      console.warn(`[softphone] SIP ${method} failed reason=${reason}: ${err.message}`);
+    }
+  }
+
+  if (typeof target.removeAllListeners === 'function') {
+    target.removeAllListeners();
+  }
+}
+
+async function registerCurrentSoftphone(reason) {
   if (!softphone) {
     throw new Error('Softphone is not initialized');
   }
 
   if (registrationPromise) return registrationPromise;
 
-  registrationPromise = softphone.register()
+  const registeringSoftphone = softphone;
+  const timeoutMs = config.sip.registrationTimeoutMs;
+
+  registrationPromise = withTimeout(
+    registeringSoftphone.register(),
+    timeoutMs,
+    () => createTimeoutError(reason, timeoutMs),
+  )
     .then(() => {
       lastRegisteredAt = Date.now();
       console.log(`[softphone] Registered with RingCentral SIP proxy reason=${reason} registeredAt=${new Date(lastRegisteredAt).toISOString()}`);
-      return softphone;
+      return registeringSoftphone;
     })
     .catch((err) => {
       console.error(`[softphone] SIP registration failed reason=${reason}: ${err.message}`);
@@ -76,8 +138,38 @@ async function registerSoftphone(reason) {
   return registrationPromise;
 }
 
+async function registerSoftphone(reason) {
+  try {
+    return await registerCurrentSoftphone(reason);
+  } catch (err) {
+    if (err?.code !== 'SIP_REGISTRATION_TIMEOUT') {
+      throw err;
+    }
+
+    if (!registrationRecoveryPromise) {
+      registrationRecoveryPromise = recoverTimedOutRegistration(reason)
+        .finally(() => {
+          registrationRecoveryPromise = null;
+        });
+    }
+
+    return registrationRecoveryPromise;
+  }
+}
+
+async function recoverTimedOutRegistration(reason) {
+  const stuckSoftphone = softphone;
+  registrationPromise = null;
+  lastRegisteredAt = 0;
+
+  await disposeSoftphone(`registration-timeout-${reason}`, stuckSoftphone);
+  await createSoftphone();
+  console.warn(`[softphone] Retrying SIP registration with fresh softphone reason=${reason}`);
+  return registerCurrentSoftphone(`${reason}-recreated`);
+}
+
 export async function ensureSoftphoneRegistered() {
-  const maxRegistrationAgeMs = 4 * 60 * 1000;
+  const maxRegistrationAgeMs = config.sip.maxRegistrationAgeMs;
   const ageMs = lastRegisteredAt ? Date.now() - lastRegisteredAt : Infinity;
 
   if (softphone && ageMs < maxRegistrationAgeMs) {

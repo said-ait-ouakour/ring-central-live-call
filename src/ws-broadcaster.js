@@ -142,3 +142,11 @@ export function broadcast(callId, data) {
     if (ws.readyState === 1) ws.send(json);
   }
 }
+
+/** Broadcast a bridge-wide event to every connected CRM client. */
+export function broadcastEvent(data) {
+  const json = JSON.stringify(data);
+  for (const ws of clients) {
+    if (ws.readyState === 1) ws.send(json);
+  }
+}
