@@ -1,10 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'node:crypto';
+import { inferClientSpeakerRole } from './speaker-role.mjs';
 
 export function createSupabaseMeetingSync(options = {}) {
   const supabase = options.supabase || createServiceClient(options.env || process.env);
   const logger = options.logger || console;
   const env = options.env || process.env;
+  const clientIdentityCache = new Map();
 
   async function upsertActiveMeeting(meeting) {
     const row = {
@@ -91,6 +93,10 @@ export function createSupabaseMeetingSync(options = {}) {
   }
 
   async function persistTranscriptLine(line, meeting = null) {
+    const clientNames = meeting ? await resolveClientNames(meeting) : [];
+    const speakerRole = line.speakerRole && line.speakerRole !== 'unknown'
+      ? line.speakerRole
+      : inferClientSpeakerRole(line.speaker, clientNames);
     const row = {
       provider: line.provider || 'fireflies',
       provider_chunk_id: line.providerChunkId ?? null,
@@ -99,7 +105,7 @@ export function createSupabaseMeetingSync(options = {}) {
       text: line.text,
       is_final: Boolean(line.isFinal),
       speaker: line.speaker ?? null,
-      speaker_role: line.speakerRole || 'unknown',
+      speaker_role: speakerRole,
       turn_order: line.turnOrder ?? null,
       confidence: line.confidence ?? null,
       audio_start: line.audioStart ?? null,
@@ -122,6 +128,31 @@ export function createSupabaseMeetingSync(options = {}) {
       });
       throw error;
     }
+  }
+
+  async function resolveClientNames(meeting) {
+    const leadId = meeting?.leadId ?? meeting?.lead_id ?? null;
+    const contactId = meeting?.contactId ?? meeting?.contact_id ?? null;
+    const cacheKey = `${contactId || ''}:${leadId || ''}`;
+    if (clientIdentityCache.has(cacheKey)) return clientIdentityCache.get(cacheKey);
+
+    const names = [];
+    const queries = [];
+    if (contactId) {
+      queries.push(supabase.from('contacts').select('first_name, last_name').eq('id', contactId).maybeSingle());
+    }
+    if (leadId) {
+      queries.push(supabase.from('leads').select('first_name, last_name').eq('id', leadId).maybeSingle());
+    }
+    const results = await Promise.all(queries);
+    for (const result of results) {
+      const row = result.data;
+      const name = [row?.first_name, row?.last_name].filter(Boolean).join(' ').trim();
+      if (name) names.push(name);
+    }
+    const uniqueNames = [...new Set(names)];
+    clientIdentityCache.set(cacheKey, uniqueNames);
+    return uniqueNames;
   }
 
   async function reconcileFirefliesTranscript(sessionId, meeting = null) {
