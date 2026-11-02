@@ -1,12 +1,15 @@
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'node:crypto';
-import { inferClientSpeakerRole } from './speaker-role.mjs';
+import { inferSpeakerRole } from './speaker-role.mjs';
+
+const STAFF_CACHE_MS = 15 * 60 * 1000;
 
 export function createSupabaseMeetingSync(options = {}) {
   const supabase = options.supabase || createServiceClient(options.env || process.env);
   const logger = options.logger || console;
   const env = options.env || process.env;
   const clientIdentityCache = new Map();
+  let staffCache = { at: 0, staff: null };
 
   async function upsertActiveMeeting(meeting) {
     const row = {
@@ -96,7 +99,11 @@ export function createSupabaseMeetingSync(options = {}) {
     const clientNames = meeting ? await resolveClientNames(meeting) : [];
     const speakerRole = line.speakerRole && line.speakerRole !== 'unknown'
       ? line.speakerRole
-      : inferClientSpeakerRole(line.speaker, clientNames);
+      : inferSpeakerRole(line.speaker, {
+          clientNames,
+          staff: await loadStaff(),
+          advisorName: meeting?.advisorName ?? meeting?.advisor_name ?? null,
+        });
     const row = {
       provider: line.provider || 'fireflies',
       provider_chunk_id: line.providerChunkId ?? null,
@@ -153,6 +160,26 @@ export function createSupabaseMeetingSync(options = {}) {
     const uniqueNames = [...new Set(names)];
     clientIdentityCache.set(cacheKey, uniqueNames);
     return uniqueNames;
+  }
+
+  /**
+   * Everyone in the CRM users table, so the adviser and any colleague on the
+   * call are tagged advisor rather than client. A failed read keeps the last
+   * good list; with none at all it returns null and only a name match tags
+   * the client.
+   */
+  async function loadStaff() {
+    if (staffCache.staff && Date.now() - staffCache.at < STAFF_CACHE_MS) return staffCache.staff;
+    const { data, error } = await supabase.from('users').select('fullName, email');
+    if (error) {
+      logger.error?.('[meeting-sync] staff read failed', error);
+      return staffCache.staff;
+    }
+    staffCache = {
+      at: Date.now(),
+      staff: (data || []).map((row) => ({ name: row.fullName ?? null, email: row.email ?? null })),
+    };
+    return staffCache.staff;
   }
 
   async function reconcileFirefliesTranscript(sessionId, meeting = null) {
