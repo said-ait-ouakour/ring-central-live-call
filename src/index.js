@@ -12,6 +12,7 @@ import { createServer } from 'http';
 import express from 'express';
 import cors from 'cors';
 import config from './config.js';
+import { reportError } from './crm-alerts.js';
 import { initSoftphone } from './softphone.js';
 import {
   startSupervision,
@@ -114,6 +115,7 @@ app.post('/api/supervise', authMiddleware, async (req, res) => {
     });
   } catch (err) {
     console.error('[api] Supervise error:', err);
+    void reportError('start-call-transcript', 'could not start a call transcript', err);
     const callId = req.body?.telephonySessionId;
     if (callId) removeCall(callId);
 
@@ -134,6 +136,7 @@ app.post('/api/meetings/supervise', authMiddleware, async (req, res) => {
     res.status(result.created ? 200 : 200).json({ success: true, ...result });
   } catch (err) {
     console.error('[api] Meeting supervision error:', err);
+    void reportError('start-meeting-transcript', 'could not start a meeting transcript', err);
     res.status(500).json({ error: 'Failed to start meeting supervision', details: err.message });
   }
 });
@@ -337,6 +340,7 @@ async function forwardEndedCallEvents(event, body) {
       setTimeout(() => _recentEndedCallForwardings.delete(payload.dedupeKey), config.server.endedCallWebhookDedupeTtlMs);
     } catch (err) {
       console.error(`[ended-call] Failed to forward dedupeKey=${payload.dedupeKey}: ${err.message}`);
+      void reportError('forward-ended-call', 'could not pass an ended call on', err);
     } finally {
       _inFlightEndedCallForwardings.delete(payload.dedupeKey);
     }
@@ -506,6 +510,7 @@ async function handleTelephonyEvent(event) {
     setTimeout(() => _recentSupervisions.delete(supervisionKey), SUPERVISION_DEDUPE_TTL_MS);
   } catch (err) {
     console.error('[webhook] Auto-supervision failed:', err.message);
+    void reportError('auto-supervise-call', 'could not join a call for its live transcript', err);
     setCallStatus(telephonySessionId, 'failed');
     clearInviteWaitTimeout(telephonySessionId);
     removeCall(telephonySessionId, 'failed');
@@ -551,12 +556,21 @@ async function start() {
     if (config.ringCentral.enabled) await registerWebhookSubscription();
   } catch (err) {
     console.error('[bridge] Fatal startup error:', err);
+    await reportError('startup', 'failed to start', err, { severity: 'p1' });
     process.exit(1);
   }
 }
 
 process.on('unhandledRejection', (err) => {
   console.error('[bridge] Unhandled rejection:', err);
+  void reportError('unhandled-rejection', 'unhandled error', err);
+});
+
+// Without a handler Node prints the error and exits 1. The same, after
+// telling the CRM: the process restarts, and the alert says why.
+process.on('uncaughtException', (err) => {
+  console.error('[bridge] Uncaught exception:', err);
+  void reportError('crashed', 'crashed', err, { severity: 'p1' }).finally(() => process.exit(1));
 });
 
 process.on('SIGTERM', () => {

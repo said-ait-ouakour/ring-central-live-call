@@ -1,4 +1,5 @@
 import config from './config.js';
+import { reportError } from './crm-alerts.js';
 import { broadcastEvent } from './ws-broadcaster.js';
 import { createFirefliesRealtimeSession } from './fireflies-realtime.mjs';
 import { createMeetingStore } from './meeting-store.mjs';
@@ -102,9 +103,13 @@ export async function superviseMeeting(input = {}) {
         factfindSync.recordFinalTranscript(current, line);
       } catch (error) {
         console.error(`[meeting] Final transcript handling failed session=${transcriptId}:`, error.message);
+        void reportError('save-meeting-transcript', 'could not save a meeting transcript line', error);
       }
     },
-    onError: (error) => console.error(`[meeting] Fireflies error session=${transcriptId}:`, error.message),
+    onError: (error) => {
+      console.error(`[meeting] Fireflies error session=${transcriptId}:`, error.message);
+      void reportError('fireflies-realtime', 'the Fireflies live transcript connection failed', error);
+    },
     onEnded: ({ endedAt }) => void finishMeeting(transcriptId, endedAt),
   });
 

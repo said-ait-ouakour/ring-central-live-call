@@ -22,6 +22,7 @@ import {
   removeCall,
 } from './call-store.js';
 import config from './config.js';
+import { reportError } from './crm-alerts.js';
 import { loadSipCredentials } from './sip-credentials.js';
 import { connectTranscriber, closeTranscriber, sendAudioChunk } from './transcriber.js';
 import { broadcast } from './ws-broadcaster.js';
@@ -129,6 +130,7 @@ async function registerCurrentSoftphone(reason) {
     })
     .catch((err) => {
       console.error(`[softphone] SIP registration failed reason=${reason}: ${err.message}`);
+      void reportError('sip-registration', 'SIP registration with RingCentral failed', err, { severity: 'p2' });
       throw err;
     })
     .finally(() => {
