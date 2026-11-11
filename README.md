@@ -135,6 +135,16 @@ Recommended n8n flow:
 - Delay processing before fetching RingCentral call records or recordings.
 - Apply throttling and retry in the worker path to avoid RingCentral rate limits.
 
+## Reporting failures to the CRM
+
+The CRM checks this bridge's `/health` every five minutes and alerts when a call it makes here fails. What goes wrong inside the bridge on its own is reported by the bridge itself (`src/crm-alerts.js`): SIP registration, the RingCentral sign-in and call event subscription, AssemblyAI and Fireflies connections, call and meeting transcripts not saved, ended calls not passed on, a failed start, an unhandled error or a crash. Each is posted to the CRM's `POST /api/system-alerts` as `service_error` and shows in the DATA & Flows chat under the same rules as the CRM's own alerts. The same fault is sent at most every 30 seconds; a report never holds a call up.
+
+| Variable | What |
+|---|---|
+| `CRM_ALERTS_SECRET` | The CRM's `CRM_N8N_SHARED_SECRET`. Unset: nothing is reported |
+| `CRM_ALERTS_URL` | Optional. Default `{CRM_BASE_URL or CRM_URL}/api/system-alerts` |
+| `CRM_ALERTS_SOURCE` | Optional. Default `live-meeting-bridge` when `BRIDGE_MODE=meetings`, else `live-call-bridge`: the names the CRM checks the two deployments by |
+
 ## Deployment
 
 This service needs an **always-on server** (not serverless). Recommended free options:

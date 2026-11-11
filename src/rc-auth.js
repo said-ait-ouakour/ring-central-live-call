@@ -4,6 +4,7 @@
  */
 
 import config from './config.js';
+import { reportError } from './crm-alerts.js';
 
 let accessToken = null;
 let tokenExpiresAt = 0;
@@ -93,6 +94,7 @@ async function authenticate() {
   authPromise = authenticateNow()
     .catch((err) => {
       console.error(`[rc-auth] token refresh failed: ${err.message}`);
+      void reportError('rc-auth', 'RingCentral sign-in (token refresh) failed', err);
       throw err;
     })
     .finally(() => {

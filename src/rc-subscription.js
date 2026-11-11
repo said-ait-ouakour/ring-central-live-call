@@ -8,6 +8,7 @@
 
 import { rcFetch } from './rc-auth.js';
 import config from './config.js';
+import { reportError } from './crm-alerts.js';
 
 let subscriptionId = null;
 let renewalTimer = null;
@@ -58,6 +59,7 @@ export async function registerWebhookSubscription() {
     return data;
   } catch (err) {
     console.error('[rc-sub] Failed to create webhook subscription:', err.message);
+    void reportError('rc-subscription', 'could not subscribe to RingCentral call events', err, { severity: 'p2' });
     console.error('[rc-sub] Ensure RC_WEBHOOK_URL is publicly reachable and the RC app has the "Telephony" permission');
     return null;
   }

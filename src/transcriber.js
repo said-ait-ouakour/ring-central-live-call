@@ -11,6 +11,7 @@
 
 import WebSocket from 'ws';
 import config from './config.js';
+import { reportError } from './crm-alerts.js';
 import { setAssemblyWs, addTranscriptEntry } from './call-store.js';
 import { broadcast } from './ws-broadcaster.js';
 import { syncTranscriptEntry } from './supabase-sync.js';
@@ -79,6 +80,7 @@ export function connectTranscriber(callId) {
 
     ws.on('error', (err) => {
       console.error(`[transcriber] WebSocket error for callId=${callId}:`, err.message);
+      void reportError('assemblyai', 'the AssemblyAI transcription connection failed', err);
       if (!resolved) {
         resolved = true;
         reject(err);

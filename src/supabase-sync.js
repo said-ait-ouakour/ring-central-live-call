@@ -1,4 +1,5 @@
 import config from './config.js';
+import { reportError } from './crm-alerts.js';
 import { getCall } from './call-store.js';
 import { rcFetch } from './rc-auth.js';
 
@@ -144,6 +145,7 @@ export async function syncTranscriptEntry(callId, entry) {
     });
   } catch (err) {
     console.error(`[supabase-sync] Failed to persist transcript session=${call.callId}:`, err.message);
+    void reportError('save-call-transcript', 'could not save a call transcript line', err);
   }
 }
 
