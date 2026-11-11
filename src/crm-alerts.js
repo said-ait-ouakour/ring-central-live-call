@@ -28,6 +28,20 @@ const LABELS = {
   'live-meeting-bridge': 'Meeting bridge',
 };
 
+/**
+ * The secret goes in a header, so the address must be https. http is only
+ * accepted for a service on the same machine (local development).
+ */
+export function isSecureUrl(value) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === 'https:') return true;
+    return parsed.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function message(error) {
   if (!error) return null;
   if (error instanceof Error) return error.message || error.name;
@@ -35,7 +49,11 @@ function message(error) {
 }
 
 export function createAlertReporter({ url, secret, source, fetchImpl = globalThis.fetch, now = Date.now, log = console } = {}) {
-  const enabled = Boolean(url && secret && source);
+  const secure = isSecureUrl(url);
+  const enabled = Boolean(url && secret && source && secure);
+  if (url && secret && !secure) {
+    log.warn('[crm-alerts] CRM_ALERTS_URL is not https, so nothing will be reported (the secret would be sent in clear text)');
+  }
   const lastSent = new Map();
   const label = LABELS[source] || source;
 

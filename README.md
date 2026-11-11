@@ -142,8 +142,8 @@ The CRM checks this bridge's `/health` every five minutes and alerts when a call
 | Variable | What |
 |---|---|
 | `CRM_ALERTS_SECRET` | The CRM's `CRM_N8N_SHARED_SECRET`. Unset: nothing is reported |
-| `CRM_ALERTS_URL` | Optional. Default `{CRM_BASE_URL or CRM_URL}/api/system-alerts` |
-| `CRM_ALERTS_SOURCE` | Optional. Default `live-meeting-bridge` when `BRIDGE_MODE=meetings`, else `live-call-bridge`: the names the CRM checks the two deployments by |
+| `CRM_ALERTS_URL` | Optional. Default `{CRM_BASE_URL or CRM_URL}/api/system-alerts`. Must be `https://` (`http://` only for localhost), or nothing is reported |
+| `CRM_ALERTS_SOURCE` | Set it on each Railway service. Default `live-meeting-bridge` when `BRIDGE_MODE=meetings`, else `live-call-bridge`: the names the CRM checks the two deployments by |
 
 ## Deployment
 
