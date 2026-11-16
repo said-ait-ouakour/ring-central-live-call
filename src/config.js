@@ -98,6 +98,10 @@ const config = {
     factfindDebounceMs: intEnv('LIVE_FACTFIND_DEBOUNCE_MS', 20_000),
     factfindRequestTimeoutMs: intEnv('LIVE_FACTFIND_REQUEST_TIMEOUT_MS', 15_000),
     factfindMaxLines: intEnv('LIVE_FACTFIND_MAX_LINES', 200),
+    excludedOrganizerEmails: (t('MEETING_MONITOR_EXCLUDE_ORGANIZERS') || 'aitouakoursaid@gmail.com,said@tbprivate.co')
+      .split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean),
   },
 };
 
