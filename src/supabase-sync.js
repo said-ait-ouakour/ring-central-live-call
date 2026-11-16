@@ -5,6 +5,8 @@ import { rcFetch } from './rc-auth.js';
 
 let warnedMissingConfig = false;
 const extensionProfileCache = new Map();
+const clientCache = new Map();
+const CLIENT_CACHE_MS = 10 * 60 * 1000;
 
 function enabled() {
   const ok = Boolean(config.supabase.url && config.supabase.serviceRoleKey);
@@ -89,12 +91,50 @@ async function resolveAdvisor(extensionId, fallbackName) {
   return fallbackName ? { fullName: fallbackName } : null;
 }
 
+export function clientNameFromPerson(person) {
+  if (!person) return null;
+  const name = [person.first_name, person.last_name]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ');
+  return name || null;
+}
+
+// The caller's number to the CRM person, through the same lookup the Power
+// Dialer and the WebPhone use (resolve_person_by_phone: member > contact >
+// lead). Without it every bridge call reached the Live Call page as
+// "Unknown Caller", even for a member whose number is on file.
+async function resolveClient(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 7) return null;
+
+  const cached = clientCache.get(digits);
+  if (cached && Date.now() - cached.at < CLIENT_CACHE_MS) return cached.person;
+
+  try {
+    const rows = await supabaseFetch('rpc/resolve_person_by_phone', {
+      method: 'POST',
+      body: JSON.stringify({ p_phone_variants: [String(phone)] }),
+    });
+    const person = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    clientCache.set(digits, { at: Date.now(), person });
+    console.log(`[supabase-sync] Caller lookup tail=${digits.slice(-4)} kind=${person?.kind || 'none'}`);
+    return person;
+  } catch (err) {
+    console.warn(`[supabase-sync] Caller lookup failed: ${err.message}`);
+    return null;
+  }
+}
+
 export async function syncActiveCallStarted(callId) {
   const call = getCall(callId);
   if (!call || !enabled()) return;
 
   try {
-    const advisor = await resolveAdvisor(call.extensionId, call.advisorName);
+    const [advisor, client] = await Promise.all([
+      resolveAdvisor(call.extensionId, call.advisorName),
+      resolveClient(call.clientPhone),
+    ]);
     const payload = {
       session_id: call.callId,
       telephony_session_id: call.telephonySessionId,
@@ -102,7 +142,7 @@ export async function syncActiveCallStarted(callId) {
       advisor_id: advisor?.crmUserId || null,
       advisor_name: advisor?.fullName || call.advisorName || null,
       client_number: call.clientPhone || 'Unknown',
-      client_name: null,
+      client_name: clientNameFromPerson(client),
       direction: call.direction || 'Outbound',
       start_time: call.startTime,
       status: 'active',
