@@ -167,6 +167,12 @@ export async function startMeetingMonitor() {
     discoveryConcurrency: config.meetings.activeMeetingsDiscoveryConcurrency,
     logger: console,
     onActive: async (active) => {
+      const organizerEmail = String(active.organizer_email || '').trim().toLowerCase();
+      if (organizerEmail && config.meetings.excludedOrganizerEmails.includes(organizerEmail)) {
+        console.log(`[fireflies-monitor] Skipping excluded organizer=${organizerEmail} session=${active.id}`);
+        return;
+      }
+
       const payload = {
         transcriptId: String(active.id),
         title: active.title || null,
