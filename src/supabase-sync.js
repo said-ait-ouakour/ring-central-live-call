@@ -82,6 +82,8 @@ async function getRingCentralExtensionProfile(extensionId) {
 }
 
 async function resolveAdvisor(extensionId, fallbackName) {
+  // A Vonage call has no RingCentral extension: the name the CRM sent is the one.
+  if (!extensionId) return fallbackName ? { fullName: fallbackName } : null;
   const advisor = await getAdvisorByExtension(extensionId);
   if (advisor?.fullName) return advisor;
 

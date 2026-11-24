@@ -28,8 +28,29 @@ const subscriptions = new Map();
 // All connected clients
 const clients = new Set();
 
-export function setupWsServer(server) {
-  wss = new WebSocketServer({ server, path: '/ws' });
+/**
+ * `extraRoutes`: other websocket addresses on the same server, path to an
+ * upgrade handler (the Vonage audio stream, vonage-audio.js). Each server is
+ * reached by its own path: two servers both listening on the HTTP server
+ * would refuse each other's connections.
+ */
+export function setupWsServer(server, extraRoutes = {}) {
+  wss = new WebSocketServer({ noServer: true });
+
+  server.on('upgrade', (req, socket, head) => {
+    const pathname = parse(req.url || '').pathname;
+    if (pathname === '/ws') {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+      return;
+    }
+    const route = extraRoutes[pathname];
+    if (route) {
+      route(req, socket, head);
+      return;
+    }
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+  });
 
   wss.on('connection', (ws, req) => {
     const query = parse(req.url || '', true).query;
@@ -89,6 +110,8 @@ export function setupWsServer(server) {
       ws.ping();
     }
   }, 30_000);
+  // The HTTP server keeps the bridge running; the timer alone must not (the tests).
+  heartbeatInterval.unref?.();
 
   wss.on('close', () => {
     if (heartbeatInterval) {
