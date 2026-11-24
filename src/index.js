@@ -21,6 +21,7 @@ import {
   warmSupervisorCache,
 } from './supervise.js';
 import { setupWsServer } from './ws-broadcaster.js';
+import { VONAGE_AUDIO_PATH, closeVonageStream, handleVonageAudioUpgrade } from './vonage-audio.js';
 import { addCall, getAllCalls, getCall, removeCall, setCallStatus } from './call-store.js';
 import { closeTranscriber } from './transcriber.js';
 import { registerWebhookSubscription } from './rc-subscription.js';
@@ -162,6 +163,8 @@ app.delete('/api/calls/:callId', authMiddleware, (req, res) => {
   }
 
   closeTranscriber(callId);
+  // A Vonage call: closing its stream ends the websocket leg Vonage holds open.
+  closeVonageStream(callId);
 
   if (call.callSession) {
     try {
@@ -523,7 +526,8 @@ async function handleTelephonyEvent(event) {
 
 async function start() {
   try {
-    setupWsServer(server);
+    // The live transcript of Vonage backup-phone calls (vonage-audio.js).
+    setupWsServer(server, { [VONAGE_AUDIO_PATH]: handleVonageAudioUpgrade });
 
     if (config.ringCentral.enabled) {
       console.log('[bridge] Registering SIP softphone with RingCentral...');

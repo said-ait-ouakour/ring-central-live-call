@@ -100,6 +100,27 @@ Connect to `ws://bridge-host:3100/ws?apiKey=YOUR_BRIDGE_API_KEY`
 { "type": "error", "message": "..." }
 ```
 
+## Vonage calls (the CRM's backup phone)
+
+When RingCentral is down the CRM can call through Vonage instead (crm-TB
+`docs/calls-on-vonage.md`). For the live transcript of those calls, the CRM
+adds a websocket leg to each answered Vonage call that streams its audio to
+this bridge:
+
+- `wss://<bridge>/vonage/audio?token=<BRIDGE_API_KEY>`: Vonage's first
+  frame is `websocket:connected` with the CRM's headers (`callId` as
+  `vonage-<conversation id>`, `advisorName`, `clientPhone`, `direction`), then
+  16-bit linear PCM at 16 kHz, mono: the format the transcriber already sends
+  AssemblyAI (`src/vonage-audio.js`).
+- From there it is a RingCentral call: `call_started`, transcript lines and
+  `call_ended` on `/ws` for that `callId`, and the lines saved to
+  `live_call_transcripts`. The CRM keeps `active_calls` itself.
+- `DELETE /api/calls/:callId` (the CRM, when the call ends) closes the
+  stream, and Vonage hangs the leg up.
+
+No new setting: the token is the bridge's own `BRIDGE_API_KEY`. `/ws` and
+`/vonage/audio` share the HTTP server, each reached by its path.
+
 ## Optional Ended-Call Forwarding
 
 If `ENDED_CALL_WEBHOOK_URL` is configured, the bridge also forwards deduped RingCentral terminal call events to an external webhook such as n8n. This is separate from `RC_WEBHOOK_URL`:
