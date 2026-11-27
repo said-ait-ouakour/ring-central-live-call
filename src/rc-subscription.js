@@ -77,6 +77,7 @@ function _scheduleRenewal(expirationTime) {
       await _renewSubscription();
     } catch (err) {
       console.error('[rc-sub] Renewal failed, re-registering:', err.message);
+      void reportError('rc-subscription-renewal', 'the RingCentral call events subscription could not be renewed (re-registering)', err);
       await registerWebhookSubscription();
     }
   }, delay);
@@ -123,6 +124,7 @@ export async function ensureWebhookSubscriptionActive({ createIfMissing = false 
     return data;
   } catch (err) {
     console.error(`[rc-subscription] subscription id=${subscriptionId} expiresAt=${subscriptionExpiresAt} renewalStatus=invalid; re-registering: ${err.message}`);
+    void reportError('rc-subscription-invalid', 'the RingCentral call events subscription was no longer valid (re-registering)', err);
     subscriptionId = null;
     subscriptionExpiresAt = null;
     return registerWebhookSubscription();

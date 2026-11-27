@@ -128,6 +128,7 @@ export async function superviseMeeting(input = {}) {
     })
     .catch((error) => {
       console.error(`[meeting] FactFind catch-up failed session=${transcriptId}:`, error.message);
+      void reportError('factfind-catch-up', 'could not catch the live fact find up from a meeting transcript', error);
     });
   return { created: true, meeting };
 }
@@ -161,6 +162,7 @@ export async function startMeetingMonitor() {
     console.log(`[fireflies-monitor] Seeded ${persisted.length} active Supabase meetings`);
   } catch (error) {
     console.error('[fireflies-monitor] Failed to seed active Supabase meetings:', error.message);
+    void reportError('seed-active-meetings', 'could not reload the live meetings after a restart', error, { severity: 'p2' });
   }
 
   activeMonitor = createFirefliesActiveMeetingsMonitor({
@@ -224,11 +226,13 @@ async function finishMeeting(sessionId, endedAt = new Date().toISOString()) {
     console.log(`[meeting] Transcript reconciliation session=${sessionId} lines=${reconciliation.count}`);
   } catch (error) {
     console.error(`[meeting] Transcript reconciliation failed session=${sessionId}:`, error.message);
+    void reportError('meeting-reconciliation', 'could not reconcile a meeting transcript with Fireflies', error);
   }
   try {
     await meetingSync.markMeetingEnded(sessionId, endedAt);
   } catch (error) {
     console.error(`[meeting] Failed to mark meeting ended session=${sessionId}:`, error.message);
+    void reportError('mark-meeting-ended', 'could not mark a meeting as ended', error);
   }
   broadcastMeetingEnded(broadcastEvent, meeting, endedAt);
   await factfindSync.finalize(sessionId);

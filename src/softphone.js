@@ -305,6 +305,7 @@ async function handleIncomingCall(inviteMessage) {
     console.log(`[softphone] Audio pipeline active for callId=${callId}`);
   } catch (err) {
     console.error('[softphone] Error handling incoming call:', err);
+    void reportError('softphone-incoming-call', 'could not take the audio of a supervised call', err);
     if (callSession) {
       try {
         callSession.hangup();
