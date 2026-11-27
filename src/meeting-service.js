@@ -1,5 +1,5 @@
 import config from './config.js';
-import { reportError } from './crm-alerts.js';
+import { reportError, loggerReporting } from './crm-alerts.js';
 import { broadcastEvent } from './ws-broadcaster.js';
 import { createFirefliesRealtimeSession } from './fireflies-realtime.mjs';
 import { createMeetingStore } from './meeting-store.mjs';
@@ -29,7 +29,12 @@ function dependencies() {
       debounceMs: config.meetings.factfindDebounceMs,
       requestTimeoutMs: config.meetings.factfindRequestTimeoutMs,
       maxLines: config.meetings.factfindMaxLines,
-      logger: console,
+      // Its failures are swallowed so the meeting carries on; reported so the
+      // live fact find does not stop filling without anyone knowing.
+      logger: loggerReporting({
+        '[live-factfind-sync] extraction cycle failed': { key: 'live-factfind-update', title: 'could not fill the live fact find from the meeting' },
+        '[live-factfind-sync] finalize failed': { key: 'live-factfind-finalize', title: 'could not finish the live fact find at the end of a meeting' },
+      }),
     });
   }
   return { sync, factfind };
@@ -172,7 +177,12 @@ export async function startMeetingMonitor() {
     missesBeforeEnd: config.meetings.activeMeetingsMissesBeforeEnd,
     teamBatchSize: config.meetings.activeMeetingsTeamBatchSize,
     discoveryConcurrency: config.meetings.activeMeetingsDiscoveryConcurrency,
-    logger: console,
+    // A failed poll is how meetings that start go unnoticed, and /health
+    // still answers ok, so the CRM's own check cannot see it.
+    logger: loggerReporting({
+      '[fireflies-monitor] team discovery poll failed': { key: 'fireflies-team-poll', title: 'could not check Fireflies for meetings starting' },
+      '[fireflies-monitor] active_meetings poll failed': { key: 'fireflies-active-poll', title: 'could not check Fireflies for the live meetings' },
+    }),
     onActive: async (active) => {
       const payload = {
         transcriptId: String(active.id),

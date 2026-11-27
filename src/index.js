@@ -388,6 +388,7 @@ function scheduleInviteWaitTimeout(callId) {
     if (!call || !['supervise_pending', 'invite_waiting'].includes(call.status)) return;
 
     console.warn(`[supervise] SIP INVITE wait timed out session=${call.telephonySessionId} party=${call.partyId}`);
+    void reportError('sip-invite-timeout', 'joined a call but its audio never arrived, so it has no live transcript', `no SIP INVITE within ${INVITE_WAIT_TIMEOUT_MS}ms session=${call.telephonySessionId}`);
     setCallStatus(callId, 'failed');
     removeCall(callId, 'failed');
   }, INVITE_WAIT_TIMEOUT_MS));

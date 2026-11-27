@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { createAlertReporter } from '../src/crm-alerts.js';
+import { createAlertReporter, loggerReporting } from '../src/crm-alerts.js';
+import { createLiveFactFindSync } from '../src/live-factfind-sync.mjs';
 
 function fakeFetch(status = 200) {
   const calls = [];
@@ -83,4 +84,39 @@ test('a CRM that refuses or cannot be reached never throws', async () => {
   assert.equal(await refused.report('a', 't', 'e'), false);
   const down = createAlertReporter({ url: 'https://crm/api/system-alerts', secret: 's', source: 'live-call-bridge', fetchImpl: async () => { throw new Error('ECONNREFUSED'); }, log: quiet });
   assert.equal(await down.report('a', 't', 'e'), false);
+});
+
+test('a logged failure named in the map is also reported; others are only logged', () => {
+  const logged = [];
+  const reported = [];
+  const logger = loggerReporting(
+    { '[mod] poll failed': { key: 'mod-poll', title: 'could not poll' } },
+    { log: { error: (...args) => logged.push(args), info: () => {} }, report: (...args) => reported.push(args) },
+  );
+  const error = new Error('boom');
+  logger.error('[mod] poll failed', error);
+  logger.error('[mod] something else failed', error);
+  logger.info('[mod] fine');
+  assert.equal(logged.length, 2);
+  assert.deepEqual(reported, [['mod-poll', 'could not poll', error]]);
+});
+
+test('the live fact find reports an update and a finish the CRM refused', async () => {
+  const reported = [];
+  const factfind = createLiveFactFindSync({
+    baseUrl: 'https://crm',
+    secret: 's',
+    debounceMs: 1,
+    fetch: async () => ({ ok: false, status: 503, json: async () => ({}) }),
+    logger: loggerReporting(
+      {
+        '[live-factfind-sync] extraction cycle failed': { key: 'live-factfind-update', title: 'u' },
+        '[live-factfind-sync] finalize failed': { key: 'live-factfind-finalize', title: 'f' },
+      },
+      { log: { error() {} }, report: (key) => reported.push(key) },
+    ),
+  });
+  factfind.recordFinalTranscript({ sessionId: 'm1' }, { isFinal: true, text: 'We have a house worth 500k' });
+  await factfind.finalize('m1');
+  assert.deepEqual(reported, ['live-factfind-update', 'live-factfind-finalize']);
 });
