@@ -117,3 +117,25 @@ export function reportError(key, title, error, options) {
 }
 
 export const crmAlertsEnabled = crmAlerts.enabled;
+
+/**
+ * A logger for the .mjs modules (live fact find, Fireflies monitor), which
+ * log their failures and carry on. It logs exactly as `log` does, and an
+ * error whose message is in `alerts` is also reported, so a failure that
+ * would otherwise stop something quietly reaches System Alerts.
+ *
+ *   alerts  { '[module] message': { key, title } }
+ */
+export function loggerReporting(alerts, { log = console, report = reportError } = {}) {
+  return {
+    debug: (...args) => log.debug?.(...args),
+    info: (...args) => log.info?.(...args),
+    log: (...args) => log.log?.(...args),
+    warn: (...args) => log.warn?.(...args),
+    error: (message, error, ...rest) => {
+      log.error?.(message, error, ...rest);
+      const alert = alerts[message];
+      if (alert) void report(alert.key, alert.title, error);
+    },
+  };
+}

@@ -159,6 +159,7 @@ export async function syncActiveCallStarted(callId) {
     console.log(`[supabase-sync] Active call synced session=${call.callId}`);
   } catch (err) {
     console.error(`[supabase-sync] Failed to sync active call session=${call.callId}:`, err.message);
+    void reportError('save-active-call', 'could not record a live call as active', err);
   }
 }
 
@@ -204,5 +205,6 @@ export async function syncActiveCallEnded(call) {
     console.log(`[supabase-sync] Active call ended session=${call.callId}`);
   } catch (err) {
     console.error(`[supabase-sync] Failed to mark call ended session=${call.callId}:`, err.message);
+    void reportError('mark-call-ended', 'could not mark a live call as ended', err);
   }
 }

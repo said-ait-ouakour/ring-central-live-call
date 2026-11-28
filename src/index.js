@@ -12,7 +12,7 @@ import { createServer } from 'http';
 import express from 'express';
 import cors from 'cors';
 import config from './config.js';
-import { reportError } from './crm-alerts.js';
+import { reportError, crmAlertsEnabled } from './crm-alerts.js';
 import { initSoftphone } from './softphone.js';
 import {
   startSupervision,
@@ -55,6 +55,9 @@ app.get('/health', (_req, res) => {
     status: 'ok',
     uptime: process.uptime(),
     activeCalls: getAllCalls().length,
+    // Whether this service's own failures reach the CRM's System Alerts
+    // (CRM_ALERTS_SECRET and CRM_ALERTS_URL or CRM_BASE_URL set, https).
+    crmAlerts: crmAlertsEnabled,
     timestamp: new Date().toISOString(),
   });
 });
@@ -183,6 +186,7 @@ app.delete('/api/meetings/:sessionId', authMiddleware, async (req, res) => {
     res.json({ success: true, meeting });
   } catch (err) {
     console.error('[api] Meeting stop error:', err);
+    void reportError('stop-meeting-transcript', 'could not stop a meeting transcript', err);
     res.status(500).json({ error: 'Failed to stop meeting supervision', details: err.message });
   }
 });
@@ -236,6 +240,7 @@ app.post('/webhook/ringcentral', express.json(), async (req, res) => {
     await handleTelephonyEvent(req.body);
   } catch (err) {
     console.error('[webhook] Error processing event:', err.message);
+    void reportError('rc-webhook-event', 'could not process a RingCentral call event', err);
   }
 });
 
@@ -383,6 +388,7 @@ function scheduleInviteWaitTimeout(callId) {
     if (!call || !['supervise_pending', 'invite_waiting'].includes(call.status)) return;
 
     console.warn(`[supervise] SIP INVITE wait timed out session=${call.telephonySessionId} party=${call.partyId}`);
+    void reportError('sip-invite-timeout', 'joined a call but its audio never arrived, so it has no live transcript', `no SIP INVITE within ${INVITE_WAIT_TIMEOUT_MS}ms session=${call.telephonySessionId}`);
     setCallStatus(callId, 'failed');
     removeCall(callId, 'failed');
   }, INVITE_WAIT_TIMEOUT_MS));
